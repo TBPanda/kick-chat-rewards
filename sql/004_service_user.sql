@@ -1,30 +1,30 @@
 -- Create a dedicated ingest user with RSA key-pair auth (no interactive MFA).
--- Run as ACCOUNTADMIN in Snowsight AFTER you generate keys (see scripts/generate_snowflake_keys.sh).
+-- Run the WHOLE file in Snowsight with role = ACCOUNTADMIN
+-- (worksheet role dropdown, top-right — not just USE ROLE).
 --
--- 1. Run: bash scripts/generate_snowflake_keys.sh
--- 2. Copy the PUBLIC key body (no BEGIN/END lines) into RSA_PUBLIC_KEY below
--- 3. Run this SQL
--- 4. Put the PRIVATE key PEM into Railway as SNOWFLAKE_PRIVATE_KEY
---    (replace real newlines with \n for a single-line env var) and set:
---      SNOWFLAKE_USER=KICK_INGEST
---      SNOWFLAKE_ROLE=KICK_CHAT_ROLE
---    Clear SNOWFLAKE_PASSWORD on Railway.
+-- Keys: bash scripts/generate_snowflake_keys.sh
+-- Paste public key body into RSA_PUBLIC_KEY below (no BEGIN/END lines).
 
 USE ROLE ACCOUNTADMIN;
 
 CREATE ROLE IF NOT EXISTS KICK_CHAT_ROLE;
+GRANT ROLE KICK_CHAT_ROLE TO ROLE ACCOUNTADMIN;
+GRANT ROLE KICK_CHAT_ROLE TO ROLE SYSADMIN;
 
 CREATE USER IF NOT EXISTS KICK_INGEST
   TYPE = SERVICE
-  DEFAULT_ROLE = KICK_CHAT_ROLE
-  DEFAULT_WAREHOUSE = COMPUTE_WH
-  DEFAULT_NAMESPACE = KICK_CHAT.AMIRPHANTHOM
   COMMENT = 'Railway webhook ingest for amirphanthom chat';
 
--- Paste the public key WITHOUT the -----BEGIN/END----- lines, as one string:
+-- Paste the public key WITHOUT the -----BEGIN/END----- lines:
 ALTER USER KICK_INGEST SET RSA_PUBLIC_KEY='PASTE_PUBLIC_KEY_BODY_HERE';
 
 GRANT ROLE KICK_CHAT_ROLE TO USER KICK_INGEST;
+
+ALTER USER KICK_INGEST SET
+  DEFAULT_ROLE = KICK_CHAT_ROLE
+  DEFAULT_WAREHOUSE = COMPUTE_WH
+  DEFAULT_NAMESPACE = KICK_CHAT.AMIRPHANTHOM;
+
 GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE KICK_CHAT_ROLE;
 GRANT USAGE ON DATABASE KICK_CHAT TO ROLE KICK_CHAT_ROLE;
 GRANT USAGE ON SCHEMA KICK_CHAT.AMIRPHANTHOM TO ROLE KICK_CHAT_ROLE;
