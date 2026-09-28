@@ -1,0 +1,4 @@
+message_id,kick_user_id,username,content,created_at,channel_slug
+sample-msg-001,1001,viewer_one,Hello PH!,2025-01-15T18:00:00Z,amirphanthom
+sample-msg-002,1002,viewer_two,!song,2025-01-15T18:01:00Z,amirphanthom
+sample-msg-003,1001,viewer_one,GG WP,2025-01-15T18:05:00Z,amirphanthom
