@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 .env
+.secrets/
+*.pem
+*.pub
 .DS_Store
 *.egg-info/
 dist/

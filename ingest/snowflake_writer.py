@@ -11,6 +11,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 import snowflake.connector
+from cryptography.hazmat.primitives import serialization
 from snowflake.connector import DictCursor
 
 from ingest.config import Settings, get_settings
@@ -26,23 +27,54 @@ def is_command_message(content: str | None) -> bool:
     return bool(COMMAND_RE.match(content.strip()))
 
 
+def _load_private_key_bytes(pem: str, passphrase: str | None) -> bytes:
+    """Load PEM private key and return DER bytes for snowflake-connector."""
+    # Support Railway env values that use literal \n instead of real newlines
+    normalized = pem.strip().replace("\\n", "\n")
+    password = passphrase.encode("utf-8") if passphrase else None
+    key = serialization.load_pem_private_key(
+        normalized.encode("utf-8"),
+        password=password,
+    )
+    return key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
 @contextmanager
 def snowflake_connection(settings: Settings | None = None) -> Iterator[Any]:
     s = settings or get_settings()
     if not s.snowflake_account or not s.snowflake_user:
         raise RuntimeError(
             "Snowflake credentials missing. Set SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, "
-            "SNOWFLAKE_PASSWORD in .env"
+            "and either SNOWFLAKE_PRIVATE_KEY (recommended) or SNOWFLAKE_PASSWORD."
         )
-    conn = snowflake.connector.connect(
-        account=s.snowflake_account,
-        user=s.snowflake_user,
-        password=s.snowflake_password,
-        warehouse=s.snowflake_warehouse,
-        database=s.snowflake_database,
-        schema=s.snowflake_schema,
-        role=s.snowflake_role,
-    )
+
+    connect_kwargs: dict[str, Any] = {
+        "account": s.snowflake_account,
+        "user": s.snowflake_user,
+        "warehouse": s.snowflake_warehouse,
+        "database": s.snowflake_database,
+        "schema": s.snowflake_schema,
+        "role": s.snowflake_role,
+    }
+
+    if s.snowflake_private_key.strip():
+        connect_kwargs["private_key"] = _load_private_key_bytes(
+            s.snowflake_private_key,
+            s.snowflake_private_key_passphrase or None,
+        )
+    elif s.snowflake_password:
+        connect_kwargs["password"] = s.snowflake_password
+    else:
+        raise RuntimeError(
+            "Set SNOWFLAKE_PRIVATE_KEY (recommended; avoids MFA) "
+            "or SNOWFLAKE_PASSWORD in the environment."
+        )
+
+    conn = snowflake.connector.connect(**connect_kwargs)
     try:
         yield conn
     finally:

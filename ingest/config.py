@@ -27,6 +27,9 @@ class Settings:
     snowflake_account: str
     snowflake_user: str
     snowflake_password: str
+    # Preferred for Railway: RSA key-pair (avoids MFA on human users)
+    snowflake_private_key: str
+    snowflake_private_key_passphrase: str
     snowflake_warehouse: str
     snowflake_database: str
     snowflake_schema: str
@@ -50,10 +53,14 @@ def get_settings() -> Settings:
         snowflake_account=os.getenv("SNOWFLAKE_ACCOUNT", ""),
         snowflake_user=os.getenv("SNOWFLAKE_USER", ""),
         snowflake_password=os.getenv("SNOWFLAKE_PASSWORD", ""),
+        snowflake_private_key=os.getenv("SNOWFLAKE_PRIVATE_KEY", ""),
+        snowflake_private_key_passphrase=os.getenv(
+            "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE", ""
+        ),
         snowflake_warehouse=os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
         snowflake_database=os.getenv("SNOWFLAKE_DATABASE", "KICK_CHAT"),
         snowflake_schema=os.getenv("SNOWFLAKE_SCHEMA", "AMIRPHANTHOM"),
-        snowflake_role=os.getenv("SNOWFLAKE_ROLE", "SYSADMIN"),
+        snowflake_role=os.getenv("SNOWFLAKE_ROLE", "KICK_CHAT_ROLE"),
         report_password=os.getenv("REPORT_PASSWORD", "changeme"),
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", "8000")),
