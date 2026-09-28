@@ -20,18 +20,17 @@ Save **Client ID** and **Client Secret** for Railway variables.
 
 ## 3. Snowflake key-pair auth (required — MFA blocks password on Railway)
 
-Your human Snowflake user needs MFA, which cannot be used from Railway. Create a **service user + RSA key** instead:
+Your human Snowflake user needs MFA, which cannot be used with a password from Railway. Attach an **RSA public key** to your existing user (`TBPANDA`) instead:
 
 ```bash
-# On your laptop
+# On your laptop (already done if .secrets/ exists)
 bash scripts/generate_snowflake_keys.sh
 ```
 
-Then in **Snowsight** (as ACCOUNTADMIN):
+Then in **Snowsight** (worksheet role = ACCOUNTADMIN):
 
-1. Open `sql/004_service_user.sql`
-2. Replace `PASTE_PUBLIC_KEY_BODY_HERE` with the public key body printed by the script
-3. Run the whole file
+1. Run `.secrets/004_service_user_READY.sql` (or `sql/004_service_user.sql` with the public key pasted in)
+2. That runs: `ALTER USER TBPANDA SET RSA_PUBLIC_KEY='...'`
 
 ## 4. Environment variables (Railway → Variables)
 
@@ -43,7 +42,7 @@ KICK_CHANNEL_SLUG=amirphanthom
 KICK_WEBHOOK_SKIP_VERIFY=false
 
 SNOWFLAKE_ACCOUNT=JSYRLUG-UD75577
-SNOWFLAKE_USER=KICK_INGEST
+SNOWFLAKE_USER=TBPANDA
 SNOWFLAKE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n
 SNOWFLAKE_WAREHOUSE=COMPUTE_WH
 SNOWFLAKE_DATABASE=KICK_CHAT
