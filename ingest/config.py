@@ -60,7 +60,7 @@ def get_settings() -> Settings:
         snowflake_warehouse=os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
         snowflake_database=os.getenv("SNOWFLAKE_DATABASE", "KICK_CHAT"),
         snowflake_schema=os.getenv("SNOWFLAKE_SCHEMA", "AMIRPHANTHOM"),
-        snowflake_role=os.getenv("SNOWFLAKE_ROLE", "KICK_CHAT_ROLE"),
+        snowflake_role=os.getenv("SNOWFLAKE_ROLE", "SYSADMIN"),
         report_password=os.getenv("REPORT_PASSWORD", "changeme"),
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", "8000")),
