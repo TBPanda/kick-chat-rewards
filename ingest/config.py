@@ -62,7 +62,7 @@ def get_settings() -> Settings:
         snowflake_private_key_passphrase=_env("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE"),
         snowflake_warehouse=_env("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
         snowflake_database=_env("SNOWFLAKE_DATABASE", "KICK_CHAT"),
-        snowflake_schema=_env("SNOWFLAKE_SCHEMA", "AMIRPHANTHOM"),
+        snowflake_schema=_env("SNOWFLAKE_SCHEMA", "CORE"),
         snowflake_role=_env("SNOWFLAKE_ROLE", "SYSADMIN"),
         report_password=_env("REPORT_PASSWORD", "changeme"),
         host=_env("HOST", "0.0.0.0"),

@@ -36,7 +36,7 @@ from ingest.snowflake_writer import (  # noqa: E402
     insert_chat_message,
     should_skip_chat_message,
     snowflake_connection,
-    upsert_user,
+    upsert_channel_user,
 )
 
 
@@ -164,11 +164,11 @@ def main(path: Path, dry_run: bool, limit: int | None) -> None:
             )
             if ok:
                 inserted += 1
-                upsert_user(
+                upsert_channel_user(
                     conn,
                     kick_user_id=row["kick_user_id"],
                     username=row["username"],
-                    channel_slug=None,
+                    channel_slug=row["channel_slug"],
                     profile_picture=None,
                     is_verified=False,
                     seen_at=created_at,

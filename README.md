@@ -1,23 +1,21 @@
-# Kick Chat Activity System — AmirPhanThom
+# Kick Chat Activity System
 
-Collect Kick chat for [amirphanthom](https://kick.com/amirphanthom), store it in **Snowflake**, query it via **Snowflake Managed MCP** in Cursor, and rank chatters with a small **Streamlit** report.
+Collect Kick chat for one or more channels (starting with [amirphanthom](https://kick.com/amirphanthom)), store it in **Snowflake** (`KICK_CHAT.CORE`), query via **Snowflake Managed MCP**, and rank chatters with a **Streamlit** report.
 
 ## Stack
 
-- **Python / FastAPI** — Kick webhook ingest + signature verification
-- **Snowflake** — `KICK_CHAT.AMIRPHANTHOM` tables + activity views
-- **Streamlit** — password-gated leaderboard
-- **Snowflake Managed MCP** — one-off SQL from Cursor (no custom MCP server)
-
-JavaScript is intentionally not used for ingest/data. A friend can still build UI polish later if desired.
+- **Python / FastAPI** — Kick webhook ingest + signature verification (multi-channel registry)
+- **Snowflake** — `KICK_CHAT.CORE` shared tables + activity views
+- **Streamlit** — password-gated leaderboard with channel picker + cross-channel user lookup
+- **Snowflake Managed MCP** — one-off SQL from Cursor
 
 ## Repo layout
 
 ```
 app/                 FastAPI webhook service
-ingest/              config, Kick signature verify, Snowflake writers
+ingest/              config, channels registry, Kick signature, Snowflake writers
 import_cli/          CSV/JSON historical import (no scraping)
-sql/                 DDL, views, MCP server DDL
+sql/                 DDL, views, migration, MCP, row-access scaffolding
 report/              Streamlit leaderboard
 scripts/             apply SQL + Kick event subscribe helpers
 mcp/                 Cursor mcp.json example
@@ -25,9 +23,9 @@ mcp/                 Cursor mcp.json example
 
 ## Prerequisites
 
-1. Snowflake account (warehouse + user/password or key pair — password used here)
+1. Snowflake account (warehouse + key pair recommended)
 2. Kick Developer app at [kick.com/settings/developer](https://kick.com/settings/developer)
-3. Public HTTPS URL for the webhook (Fly.io, Railway, VPS, or Cloudflare Tunnel / ngrok for local)
+3. Public HTTPS URL for the webhook (Railway, etc.)
 
 ## Quick start
 
@@ -37,16 +35,18 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# edit .env with Kick + Snowflake credentials
+# edit .env — set SNOWFLAKE_SCHEMA=CORE
 ```
 
 ### 1. Create Snowflake objects
 
 ```bash
 python scripts/apply_sql.py
+# If you already have legacy AMIRPHANTHOM data:
+python scripts/apply_sql.py --migrate-legacy
 ```
 
-This runs `sql/001_ddl.sql`, `002_views.sql`, and `003_mcp.sql`. If MCP creation fails (missing privilege), run `001`/`002` in the Snowflake UI and create the MCP server later as ACCOUNTADMIN.
+Set Railway / `.env` `SNOWFLAKE_SCHEMA=CORE` after migration.
 
 ### 2. Run the webhook service
 
@@ -55,30 +55,21 @@ export PYTHONPATH=.
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Health check: `GET /health`  
-Webhook: `POST /webhooks/kick`
+Health: `GET /health` · Webhook: `POST /webhooks/kick`
 
-Expose it publicly, then in the Kick Developer app:
+Events for channels **not** in `CHANNELS` are acknowledged but not stored.
 
-- Enable Webhooks
-- Set Webhook URL to `https://<your-host>/webhooks/kick`
-
-### 3. Subscribe to AmirPhanThom events
-
-Default broadcaster user id in `.env` is `538671` (verify with the resolve helper):
+### 3. Subscribe channels
 
 ```bash
 python scripts/subscribe_kick_events.py --resolve-slug amirphanthom
-python scripts/subscribe_kick_events.py
+python scripts/subscribe_kick_events.py --slug amirphanthom
+# Multiple streamers on the same Kick app:
+python scripts/subscribe_kick_events.py --slugs amirphanthom,otherstreamer
 python scripts/subscribe_kick_events.py --list
 ```
 
-Subscribes to:
-
-- `chat.message.sent`
-- `livestream.status.updated`
-
-Kick will unsubscribe if your endpoint fails for ~1 day — keep the service healthy and return **200** quickly.
+Registers rows in `CHANNELS` and subscribes `chat.message.sent` + `livestream.status.updated`.
 
 ### 4. Reporting UI
 
@@ -86,66 +77,56 @@ Kick will unsubscribe if your endpoint fails for ~1 day — keep the service hea
 PYTHONPATH=. streamlit run report/app.py
 ```
 
-Default password is `REPORT_PASSWORD` from `.env` (`changeme`).
+Pick a channel for leaderboards, or use **Cross-channel user** for involvement across channels.
 
-### 5. Historical import (manual only)
-
-**Do not scrape StreamerStats** — their ToS forbid bots/automated bulk access.
-
-If you have a lawful CSV/JSON export:
+### 5. Historical import
 
 ```bash
-python -m import_cli.import_messages import_cli/sample_messages.csv --dry-run
-python -m import_cli.import_messages path/to/export.csv
+python -m import_cli.import_messages path/to/export.csv --dry-run
 ```
 
-CSV columns: `message_id,kick_user_id,username,content,created_at` (optional `channel_slug`).
+CSV: `message_id,kick_user_id,username,content,created_at` (optional `channel_slug`).
 
 ### 6. Cursor + Snowflake MCP
 
 1. Ensure `KICK_CHAT_MCP` exists (`sql/003_mcp.sql`).
-2. Create a Snowflake Programmatic Access Token (PAT) for a role that can `SELECT` from `KICK_CHAT.AMIRPHANTHOM`.
-3. Copy [mcp/cursor-mcp.json.example](mcp/cursor-mcp.json.example) into `~/.cursor/mcp.json` (merge with existing servers).
-4. Replace `<ORG>-<ACCOUNT>` and the bearer token.
-5. Restart Cursor / refresh MCP tools.
+2. PAT for a role that can `SELECT` from `KICK_CHAT.CORE`.
+3. Copy [mcp/cursor-mcp.json.example](mcp/cursor-mcp.json.example) into `~/.cursor/mcp.json`.
+4. Prefer filtering by `CHANNEL_SLUG` in prompts.
 
-Example prompts once connected:
-
-- Top 20 chatters last 30 days from `LEADERBOARD_30D`
-- Users with 5+ `ACTIVE_STREAM_DAYS` from `STREAM_ACTIVE_DAYS`
-
-## Data model
+## Data model (CORE)
 
 | Object | Purpose |
 |--------|---------|
-| `CHAT_MESSAGES` | One row per message (`MESSAGE_ID` PK, idempotent) |
-| `USERS` | Chatter dimension |
-| `STREAM_SESSIONS` | Live windows from status webhooks |
-| `WEBHOOK_EVENTS` | Envelope idempotency / debug |
-| `LEADERBOARD_*` | 7d / 30d / all-time rankings (excludes `!commands`) |
-| `ACTIVITY_DAILY` | Per-user daily counts |
-| `STREAM_ACTIVE_DAYS` | Unique stream-days active |
+| `TENANTS` | Org/tenant registry (default tenant for Phase 1) |
+| `CHANNELS` | Tracked streamers + Kick subscription ids |
+| `CHAT_MESSAGES` | One row per message (`MESSAGE_ID` PK) |
+| `CHANNEL_USERS` | Per-channel chatter stats `PK(CHANNEL_SLUG, KICK_USER_ID)` |
+| `STREAM_SESSIONS` | Live windows |
+| `WEBHOOK_EVENTS` | Envelope idempotency |
+| `LEADERBOARD_*` | Per-channel rankings |
+| `USER_CHANNEL_ACTIVITY` / `USER_CROSS_CHANNEL_SUMMARY` | Cross-channel involvement |
+| `TENANT_ROLE_MAP` | Scaffold for row access policies (`sql/006`) |
 
-`SOURCE` is `webhook` or `import`.
+**Noise filter:** Kicklet promos dropped; Kicklet follow alerts kept.
 
-**Noise filter:** messages from username `Kicklet` are not stored, except follow notifications (content matching follow/follower/فالو). Promo/tip ads from Kicklet are dropped at ingest so they do not hit Snowflake.
+## Multi-tenancy roadmap
 
-## Local tests (no cloud credentials)
+- **Phase 1 (done in this schema):** shared `CORE` tables, channel registry, reject unknown channels, channel-scoped + cross-channel reports.
+- **Phase 2:** enable `sql/006_row_access_policies.sql`, map streamer Snowflake users → `TENANT_ID`, add dashboard auth.
+
+## Local tests
 
 ```bash
 PYTHONPATH=. python tests/test_smoke.py
 ```
 
-## Deploy notes
+## Deploy
 
-**Target host:** Railway at `https://chat.amirphanthom.com` — see [DEPLOY_RAILWAY.md](DEPLOY_RAILWAY.md).
-
-- Set `KICK_WEBHOOK_SKIP_VERIFY=false` in production.
-- Restrict Streamlit with a strong `REPORT_PASSWORD` (or put it behind VPN/SSO later).
-- Rotate Kick client secret and Snowflake PAT periodically.
+Railway: [DEPLOY_RAILWAY.md](DEPLOY_RAILWAY.md). After multi-channel merge, set `SNOWFLAKE_SCHEMA=CORE` and run `apply_sql.py` (+ `--migrate-legacy` if needed).
 
 ## Out of scope
 
 - StreamerStats scraping
 - Automatic Kick channel reward fulfillment
-- Multi-channel (add `CHANNEL_SLUG` filters when needed — column already present)
+- Streamer self-serve signup / billing (Phase 2+)

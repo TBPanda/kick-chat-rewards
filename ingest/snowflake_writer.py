@@ -132,6 +132,7 @@ def record_webhook_event(
     subscription_id: str | None,
     processed_ok: bool = True,
     error_message: str | None = None,
+    channel_slug: str | None = None,
 ) -> bool:
     """
     Insert webhook envelope. Returns False if this event_message_id was already seen
@@ -148,16 +149,17 @@ def record_webhook_event(
                     %s AS EVENT_TYPE,
                     %s AS EVENT_VERSION,
                     %s AS SUBSCRIPTION_ID,
+                    %s AS CHANNEL_SLUG,
                     %s AS PROCESSED_OK,
                     %s AS ERROR_MESSAGE
             ) s
             ON t.EVENT_MESSAGE_ID = s.EVENT_MESSAGE_ID
             WHEN NOT MATCHED THEN INSERT (
                 EVENT_MESSAGE_ID, EVENT_TYPE, EVENT_VERSION, SUBSCRIPTION_ID,
-                PROCESSED_OK, ERROR_MESSAGE
+                CHANNEL_SLUG, PROCESSED_OK, ERROR_MESSAGE
             ) VALUES (
                 s.EVENT_MESSAGE_ID, s.EVENT_TYPE, s.EVENT_VERSION, s.SUBSCRIPTION_ID,
-                s.PROCESSED_OK, s.ERROR_MESSAGE
+                s.CHANNEL_SLUG, s.PROCESSED_OK, s.ERROR_MESSAGE
             )
             """,
             (
@@ -165,6 +167,7 @@ def record_webhook_event(
                 event_type,
                 event_version,
                 subscription_id,
+                channel_slug,
                 processed_ok,
                 error_message,
             ),
@@ -175,6 +178,59 @@ def record_webhook_event(
         cur.close()
 
 
+def upsert_channel_user(
+    conn: Any,
+    *,
+    kick_user_id: int,
+    username: str,
+    channel_slug: str,
+    profile_picture: str | None,
+    is_verified: bool,
+    seen_at: datetime,
+) -> None:
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            MERGE INTO CHANNEL_USERS t
+            USING (
+                SELECT
+                    %s AS CHANNEL_SLUG,
+                    %s AS KICK_USER_ID,
+                    %s AS USERNAME,
+                    %s AS PROFILE_PICTURE,
+                    %s AS IS_VERIFIED,
+                    %s AS SEEN_AT
+            ) s
+            ON t.CHANNEL_SLUG = s.CHANNEL_SLUG AND t.KICK_USER_ID = s.KICK_USER_ID
+            WHEN MATCHED THEN UPDATE SET
+                USERNAME = s.USERNAME,
+                PROFILE_PICTURE = COALESCE(s.PROFILE_PICTURE, t.PROFILE_PICTURE),
+                IS_VERIFIED = s.IS_VERIFIED,
+                LAST_SEEN_AT = GREATEST(t.LAST_SEEN_AT, s.SEEN_AT),
+                MESSAGE_COUNT = t.MESSAGE_COUNT + 1
+            WHEN NOT MATCHED THEN INSERT (
+                CHANNEL_SLUG, KICK_USER_ID, USERNAME, PROFILE_PICTURE, IS_VERIFIED,
+                FIRST_SEEN_AT, LAST_SEEN_AT, MESSAGE_COUNT
+            ) VALUES (
+                s.CHANNEL_SLUG, s.KICK_USER_ID, s.USERNAME, s.PROFILE_PICTURE, s.IS_VERIFIED,
+                s.SEEN_AT, s.SEEN_AT, 1
+            )
+            """,
+            (
+                channel_slug,
+                kick_user_id,
+                username,
+                profile_picture,
+                is_verified,
+                seen_at,
+            ),
+        )
+    finally:
+        cur.close()
+
+
+# Back-compat alias for imports that still say upsert_user
 def upsert_user(
     conn: Any,
     *,
@@ -185,47 +241,17 @@ def upsert_user(
     is_verified: bool,
     seen_at: datetime,
 ) -> None:
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            """
-            MERGE INTO USERS t
-            USING (
-                SELECT
-                    %s AS KICK_USER_ID,
-                    %s AS USERNAME,
-                    %s AS CHANNEL_SLUG,
-                    %s AS PROFILE_PICTURE,
-                    %s AS IS_VERIFIED,
-                    %s AS SEEN_AT
-            ) s
-            ON t.KICK_USER_ID = s.KICK_USER_ID
-            WHEN MATCHED THEN UPDATE SET
-                USERNAME = s.USERNAME,
-                CHANNEL_SLUG = COALESCE(s.CHANNEL_SLUG, t.CHANNEL_SLUG),
-                PROFILE_PICTURE = COALESCE(s.PROFILE_PICTURE, t.PROFILE_PICTURE),
-                IS_VERIFIED = s.IS_VERIFIED,
-                LAST_SEEN_AT = GREATEST(t.LAST_SEEN_AT, s.SEEN_AT),
-                MESSAGE_COUNT = t.MESSAGE_COUNT + 1
-            WHEN NOT MATCHED THEN INSERT (
-                KICK_USER_ID, USERNAME, CHANNEL_SLUG, PROFILE_PICTURE, IS_VERIFIED,
-                FIRST_SEEN_AT, LAST_SEEN_AT, MESSAGE_COUNT
-            ) VALUES (
-                s.KICK_USER_ID, s.USERNAME, s.CHANNEL_SLUG, s.PROFILE_PICTURE, s.IS_VERIFIED,
-                s.SEEN_AT, s.SEEN_AT, 1
-            )
-            """,
-            (
-                kick_user_id,
-                username,
-                channel_slug,
-                profile_picture,
-                is_verified,
-                seen_at,
-            ),
-        )
-    finally:
-        cur.close()
+    if not channel_slug:
+        raise ValueError("channel_slug is required for CHANNEL_USERS upsert")
+    upsert_channel_user(
+        conn,
+        kick_user_id=kick_user_id,
+        username=username,
+        channel_slug=channel_slug,
+        profile_picture=profile_picture,
+        is_verified=is_verified,
+        seen_at=seen_at,
+    )
 
 
 def insert_chat_message(
@@ -340,11 +366,11 @@ def handle_chat_message_sent(
         raw_payload=payload,
     )
     if inserted:
-        upsert_user(
+        upsert_channel_user(
             conn,
             kick_user_id=int(kick_user_id),
             username=str(username),
-            channel_slug=sender.get("channel_slug"),
+            channel_slug=str(slug),
             profile_picture=sender.get("profile_picture"),
             is_verified=bool(sender.get("is_verified")),
             seen_at=created_at,
@@ -457,21 +483,23 @@ def handle_livestream_status(
 def query_leaderboard(
     conn: Any,
     *,
+    channel_slug: str,
     days: int | None = 30,
     limit: int = 50,
     exclude_commands: bool = True,
 ) -> list[dict[str, Any]]:
-    where = []
-    params: list[Any] = []
+    where = ["CHANNEL_SLUG = %s"]
+    params: list[Any] = [channel_slug]
     if exclude_commands:
         where.append("NOT COALESCE(IS_COMMAND, FALSE)")
     if days is not None:
         where.append("CREATED_AT >= DATEADD('DAY', %s, CURRENT_TIMESTAMP())")
         params.append(-days)
-    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    where_sql = "WHERE " + " AND ".join(where)
     params.append(limit)
     sql = f"""
         SELECT
+            CHANNEL_SLUG,
             KICK_USER_ID,
             MAX(USERNAME) AS USERNAME,
             COUNT(*) AS MESSAGE_COUNT,
@@ -480,7 +508,7 @@ def query_leaderboard(
             MAX(CREATED_AT) AS LAST_MESSAGE_AT
         FROM CHAT_MESSAGES
         {where_sql}
-        GROUP BY KICK_USER_ID
+        GROUP BY CHANNEL_SLUG, KICK_USER_ID
         ORDER BY MESSAGE_COUNT DESC
         LIMIT %s
     """
@@ -496,24 +524,77 @@ def query_user_messages(
     conn: Any,
     *,
     kick_user_id: int,
+    channel_slug: str | None = None,
     days: int | None = 30,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     params: list[Any] = [kick_user_id]
-    extra = ""
+    extras = ["KICK_USER_ID = %s"]
+    if channel_slug:
+        extras.append("CHANNEL_SLUG = %s")
+        params.append(channel_slug)
     if days is not None:
-        extra = "AND CREATED_AT >= DATEADD('DAY', %s, CURRENT_TIMESTAMP())"
+        extras.append("CREATED_AT >= DATEADD('DAY', %s, CURRENT_TIMESTAMP())")
         params.append(-days)
     params.append(limit)
+    where_sql = " AND ".join(extras)
     cur = conn.cursor(DictCursor)
     try:
         cur.execute(
             f"""
-            SELECT MESSAGE_ID, USERNAME, CONTENT, CREATED_AT, SOURCE, IS_COMMAND
+            SELECT MESSAGE_ID, CHANNEL_SLUG, USERNAME, CONTENT, CREATED_AT, SOURCE, IS_COMMAND
             FROM CHAT_MESSAGES
-            WHERE KICK_USER_ID = %s
-            {extra}
+            WHERE {where_sql}
             ORDER BY CREATED_AT DESC
+            LIMIT %s
+            """,
+            params,
+        )
+        return list(cur.fetchall())
+    finally:
+        cur.close()
+
+
+def query_user_cross_channel(
+    conn: Any,
+    *,
+    kick_user_id: int | None = None,
+    username: str | None = None,
+    days: int | None = 30,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Operator view: one Kick user's activity broken down by channel."""
+    where = ["NOT COALESCE(IS_COMMAND, FALSE)"]
+    params: list[Any] = []
+    if kick_user_id is not None:
+        where.append("KICK_USER_ID = %s")
+        params.append(kick_user_id)
+    if username:
+        where.append("LOWER(USERNAME) = LOWER(%s)")
+        params.append(username)
+    if days is not None:
+        where.append("CREATED_AT >= DATEADD('DAY', %s, CURRENT_TIMESTAMP())")
+        params.append(-days)
+    if kick_user_id is None and not username:
+        raise ValueError("Provide kick_user_id or username")
+    params.append(limit)
+    where_sql = " AND ".join(where)
+    cur = conn.cursor(DictCursor)
+    try:
+        cur.execute(
+            f"""
+            SELECT
+                KICK_USER_ID,
+                MAX(USERNAME) AS USERNAME,
+                CHANNEL_SLUG,
+                COUNT(*) AS MESSAGE_COUNT,
+                COUNT(DISTINCT DATE_TRUNC('DAY', CREATED_AT)::DATE) AS ACTIVE_DAYS,
+                MIN(CREATED_AT) AS FIRST_MESSAGE_AT,
+                MAX(CREATED_AT) AS LAST_MESSAGE_AT
+            FROM CHAT_MESSAGES
+            WHERE {where_sql}
+            GROUP BY KICK_USER_ID, CHANNEL_SLUG
+            ORDER BY MESSAGE_COUNT DESC
             LIMIT %s
             """,
             params,
