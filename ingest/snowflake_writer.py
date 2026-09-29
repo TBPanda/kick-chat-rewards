@@ -38,7 +38,9 @@ def is_command_message(content: str | None) -> bool:
 def is_kicklet_sender(username: str | None) -> bool:
     if not username:
         return False
-    return username.strip().lower() in KICKLET_USERNAMES
+    # Kick may send "Kicklet" or "@Kicklet"
+    normalized = username.strip().lstrip("@").lower()
+    return normalized in KICKLET_USERNAMES
 
 
 def is_kicklet_follow_notification(content: str | None) -> bool:
@@ -375,6 +377,14 @@ def handle_chat_message_sent(
             is_verified=bool(sender.get("is_verified")),
             seen_at=created_at,
         )
+        logger.info(
+            "Stored chat message %s channel=%s user=%s",
+            message_id,
+            slug,
+            username,
+        )
+    else:
+        logger.info("Duplicate chat message_id %s — skipped insert", message_id)
     return inserted
 
 

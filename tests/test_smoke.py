@@ -61,9 +61,11 @@ def test_should_skip_kicklet_promos_keep_follows() -> None:
         "جهت خرید هر گونه پی سی گیمینگ حرفه ای پیشنهاد ما اسکای پی سی https://www.instagram.com/skypc.ir/",
     )
     assert should_skip_chat_message("Kicklet", None)
+    assert should_skip_chat_message("@Kicklet", "Reymit For Iranians : https://reymit.ir/x")
 
     # Kicklet follow alerts: keep
     assert not should_skip_chat_message("Kicklet", "bob just followed!")
+    assert not should_skip_chat_message("@Kicklet", "Thank you for the follow, ZPORIYA!")
     assert not should_skip_chat_message("kicklet", "Welcome alice — new follower")
     assert not should_skip_chat_message("Kicklet", "کاربر جدید فالو کرد")
 
