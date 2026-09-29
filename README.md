@@ -128,6 +128,8 @@ Example prompts once connected:
 
 `SOURCE` is `webhook` or `import`.
 
+**Noise filter:** messages from username `Kicklet` are not stored, except follow notifications (content matching follow/follower/فالو). Promo/tip ads from Kicklet are dropped at ingest so they do not hit Snowflake.
+
 ## Local tests (no cloud credentials)
 
 ```bash

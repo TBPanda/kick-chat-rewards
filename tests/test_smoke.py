@@ -13,7 +13,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from ingest.signature import verify_kick_signature  # noqa: E402
-from ingest.snowflake_writer import is_command_message  # noqa: E402
+from ingest.snowflake_writer import (  # noqa: E402
+    is_command_message,
+    should_skip_chat_message,
+)
 from import_cli.import_messages import _normalize_row  # noqa: E402
 
 
@@ -23,6 +26,36 @@ def test_is_command_message() -> None:
     assert not is_command_message("hello !song")
     assert not is_command_message("GG")
     assert not is_command_message(None)
+
+
+def test_should_skip_kicklet_promos_keep_follows() -> None:
+    # Regular chatters: always keep
+    assert not should_skip_chat_message("viewer1", "Reymit For Iranians")
+    assert not should_skip_chat_message("alice", "hi")
+
+    # Kicklet promos: skip
+    assert should_skip_chat_message(
+        "Kicklet",
+        "Reymit For Iranians : https://reymit.ir/amirphanthom",
+    )
+    assert should_skip_chat_message(
+        "kicklet",
+        "Thank you all for your donation Paypal : https://streamelements.com/amirphanthom/tip",
+    )
+    assert should_skip_chat_message(
+        "Kicklet",
+        "ازهفت درصد تخفیف برخوردار شو Code : phgod https://www.gamegrip.ir/products/kick-subscription/",
+    )
+    assert should_skip_chat_message(
+        "Kicklet",
+        "جهت خرید هر گونه پی سی گیمینگ حرفه ای پیشنهاد ما اسکای پی سی https://www.instagram.com/skypc.ir/",
+    )
+    assert should_skip_chat_message("Kicklet", None)
+
+    # Kicklet follow alerts: keep
+    assert not should_skip_chat_message("Kicklet", "bob just followed!")
+    assert not should_skip_chat_message("kicklet", "Welcome alice — new follower")
+    assert not should_skip_chat_message("Kicklet", "کاربر جدید فالو کرد")
 
 
 def test_normalize_flat_and_kick_shaped() -> None:
@@ -86,6 +119,7 @@ def test_signature_roundtrip() -> None:
 
 if __name__ == "__main__":
     test_is_command_message()
+    test_should_skip_kicklet_promos_keep_follows()
     test_normalize_flat_and_kick_shaped()
     test_signature_roundtrip()
     print("All tests passed.")

@@ -41,27 +41,30 @@ class Settings:
     port: int
 
 
+def _env(name: str, default: str = "") -> str:
+    """Read env var and strip surrounding whitespace (common Railway/.env paste issue)."""
+    return (os.getenv(name, default) or default).strip()
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings(
-        kick_client_id=os.getenv("KICK_CLIENT_ID", ""),
-        kick_client_secret=os.getenv("KICK_CLIENT_SECRET", ""),
-        kick_broadcaster_user_id=int(os.getenv("KICK_BROADCASTER_USER_ID", "538671")),
-        kick_channel_slug=os.getenv("KICK_CHANNEL_SLUG", "amirphanthom"),
-        kick_webhook_skip_verify=os.getenv("KICK_WEBHOOK_SKIP_VERIFY", "false").lower()
+        kick_client_id=_env("KICK_CLIENT_ID"),
+        kick_client_secret=_env("KICK_CLIENT_SECRET"),
+        kick_broadcaster_user_id=int(_env("KICK_BROADCASTER_USER_ID", "538671")),
+        kick_channel_slug=_env("KICK_CHANNEL_SLUG", "amirphanthom"),
+        kick_webhook_skip_verify=_env("KICK_WEBHOOK_SKIP_VERIFY", "false").lower()
         in ("1", "true", "yes"),
-        snowflake_account=os.getenv("SNOWFLAKE_ACCOUNT", ""),
-        snowflake_user=os.getenv("SNOWFLAKE_USER", ""),
-        snowflake_password=os.getenv("SNOWFLAKE_PASSWORD", ""),
-        snowflake_private_key=os.getenv("SNOWFLAKE_PRIVATE_KEY", ""),
-        snowflake_private_key_passphrase=os.getenv(
-            "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE", ""
-        ),
-        snowflake_warehouse=os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
-        snowflake_database=os.getenv("SNOWFLAKE_DATABASE", "KICK_CHAT"),
-        snowflake_schema=os.getenv("SNOWFLAKE_SCHEMA", "AMIRPHANTHOM"),
-        snowflake_role=os.getenv("SNOWFLAKE_ROLE", "SYSADMIN"),
-        report_password=os.getenv("REPORT_PASSWORD", "changeme"),
-        host=os.getenv("HOST", "0.0.0.0"),
-        port=int(os.getenv("PORT", "8000")),
+        snowflake_account=_env("SNOWFLAKE_ACCOUNT"),
+        snowflake_user=_env("SNOWFLAKE_USER"),
+        snowflake_password=_env("SNOWFLAKE_PASSWORD"),
+        snowflake_private_key=_env("SNOWFLAKE_PRIVATE_KEY"),
+        snowflake_private_key_passphrase=_env("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE"),
+        snowflake_warehouse=_env("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
+        snowflake_database=_env("SNOWFLAKE_DATABASE", "KICK_CHAT"),
+        snowflake_schema=_env("SNOWFLAKE_SCHEMA", "AMIRPHANTHOM"),
+        snowflake_role=_env("SNOWFLAKE_ROLE", "SYSADMIN"),
+        report_password=_env("REPORT_PASSWORD", "changeme"),
+        host=_env("HOST", "0.0.0.0"),
+        port=int(_env("PORT", "8000")),
     )
