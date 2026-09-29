@@ -34,6 +34,7 @@ from ingest.config import get_settings  # noqa: E402
 from ingest.snowflake_writer import (  # noqa: E402
     _parse_ts,
     insert_chat_message,
+    should_skip_chat_message,
     snowflake_connection,
     upsert_user,
 )
@@ -130,6 +131,9 @@ def main(path: Path, dry_run: bool, limit: int | None) -> None:
             break
         row = _normalize_row(raw, settings.kick_channel_slug)
         if row is None:
+            skipped += 1
+            continue
+        if should_skip_chat_message(row["username"], row.get("content")):
             skipped += 1
             continue
         normalized.append(row)

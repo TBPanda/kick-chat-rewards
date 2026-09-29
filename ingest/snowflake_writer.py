@@ -19,12 +19,43 @@ from ingest.config import Settings, get_settings
 logger = logging.getLogger(__name__)
 
 COMMAND_RE = re.compile(r"^!\S+")
+# Kicklet posts recurring promo/tip ads; keep only follow alerts from that bot.
+KICKLET_USERNAMES = frozenset({"kicklet"})
+KICKLET_FOLLOW_RE = re.compile(
+    r"(?:\bfollow(?:ed|ing|er)?\b|\bnew\s+follower\b|"
+    r"\u0641\u0627\u0644\u0648|"  # فالو (Persian "follow")
+    r"\u0641\u0627\u0644\u0648\u0631)",  # فالور
+    re.IGNORECASE,
+)
 
 
 def is_command_message(content: str | None) -> bool:
     if not content:
         return False
     return bool(COMMAND_RE.match(content.strip()))
+
+
+def is_kicklet_sender(username: str | None) -> bool:
+    if not username:
+        return False
+    return username.strip().lower() in KICKLET_USERNAMES
+
+
+def is_kicklet_follow_notification(content: str | None) -> bool:
+    """True when Kicklet content looks like a follow alert (worth keeping)."""
+    if not content:
+        return False
+    return bool(KICKLET_FOLLOW_RE.search(content))
+
+
+def should_skip_chat_message(username: str | None, content: str | None) -> bool:
+    """
+    Drop Kicklet promotional spam; keep Kicklet follow notifications and all
+    other senders.
+    """
+    if not is_kicklet_sender(username):
+        return False
+    return not is_kicklet_follow_notification(content)
 
 
 def _load_private_key_bytes(pem: str, passphrase: str | None) -> bytes:
@@ -281,6 +312,14 @@ def handle_chat_message_sent(
 
     created_at = _parse_ts(payload.get("created_at"))
     content = payload.get("content")
+    if should_skip_chat_message(str(username), content):
+        logger.info(
+            "Skipping Kicklet promo message %s from %s",
+            message_id,
+            username,
+        )
+        return False
+
     bc_id = broadcaster.get("user_id")
     slug = (
         broadcaster.get("channel_slug")

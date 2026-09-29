@@ -31,6 +31,11 @@ Then in **Snowsight** (worksheet role = ACCOUNTADMIN):
 
 1. Run `.secrets/004_service_user_READY.sql` (or `sql/004_service_user.sql` with the public key pasted in)
 2. That runs: `ALTER USER TBPANDA SET RSA_PUBLIC_KEY='...'`
+3. Confirm with `DESC USER TBPANDA` — property `RSA_PUBLIC_KEY_FP` must equal:
+
+   `SHA256:p0eE9CdNOUepfrzUUgNGeDlejCfrWN7eIR94ThXX5DM=`
+
+   If `RSA_PUBLIC_KEY_FP` is empty or different, Railway will keep failing with **JWT token is invalid (390144)**.
 
 ## 4. Environment variables (Railway → Variables)
 
