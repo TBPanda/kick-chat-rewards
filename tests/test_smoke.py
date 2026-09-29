@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from ingest.channels import extract_payload_channel_hints  # noqa: E402
 from ingest.signature import verify_kick_signature  # noqa: E402
 from ingest.snowflake_writer import (  # noqa: E402
     is_command_message,
@@ -26,6 +27,15 @@ def test_is_command_message() -> None:
     assert not is_command_message("hello !song")
     assert not is_command_message("GG")
     assert not is_command_message(None)
+
+
+def test_payload_channel_hints() -> None:
+    slug, bc = extract_payload_channel_hints(
+        {"broadcaster": {"channel_slug": "FooBar", "user_id": 99}}
+    )
+    assert slug == "FooBar"
+    assert bc == 99
+    assert extract_payload_channel_hints({}) == (None, None)
 
 
 def test_should_skip_kicklet_promos_keep_follows() -> None:
@@ -119,6 +129,7 @@ def test_signature_roundtrip() -> None:
 
 if __name__ == "__main__":
     test_is_command_message()
+    test_payload_channel_hints()
     test_should_skip_kicklet_promos_keep_follows()
     test_normalize_flat_and_kick_shaped()
     test_signature_roundtrip()

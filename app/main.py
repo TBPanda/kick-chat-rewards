@@ -1,4 +1,4 @@
-"""FastAPI Kick webhook receiver."""
+"""FastAPI Kick webhook receiver (multi-channel)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
+from ingest.channels import extract_payload_channel_hints, resolve_registered_channel
 from ingest.config import get_settings
 from ingest.signature import verify_kick_signature
 from ingest.snowflake_writer import (
@@ -26,8 +27,8 @@ logger = logging.getLogger("kick_webhook")
 
 app = FastAPI(
     title="Kick Chat Activity Ingest",
-    description="Receives Kick webhooks for amirphanthom chat + livestream status",
-    version="0.1.0",
+    description="Receives Kick webhooks for registered channels (multi-channel CORE)",
+    version="0.2.0",
 )
 
 
@@ -76,8 +77,47 @@ async def kick_webhook(
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
 
+    hint_slug, hint_bc_id = extract_payload_channel_hints(payload)
+
     try:
         with snowflake_connection(settings) as conn:
+            channel = resolve_registered_channel(
+                conn,
+                channel_slug=hint_slug,
+                broadcaster_user_id=hint_bc_id,
+            )
+            # Fallback for early payloads missing broadcaster: env bootstrap channel
+            if channel is None and not hint_slug and not hint_bc_id:
+                channel = resolve_registered_channel(
+                    conn,
+                    channel_slug=settings.kick_channel_slug,
+                    broadcaster_user_id=settings.kick_broadcaster_user_id,
+                )
+
+            resolved_slug = channel.channel_slug if channel else hint_slug
+
+            if channel is None:
+                logger.warning(
+                    "Ignoring event %s for unregistered channel slug=%s broadcaster_id=%s",
+                    kick_event_message_id,
+                    hint_slug,
+                    hint_bc_id,
+                )
+                is_new = record_webhook_event(
+                    conn,
+                    event_message_id=kick_event_message_id,
+                    event_type=kick_event_type,
+                    event_version=kick_event_version,
+                    subscription_id=kick_event_subscription_id,
+                    processed_ok=True,
+                    error_message="unregistered_channel",
+                    channel_slug=resolved_slug,
+                )
+                conn.commit()
+                if not is_new:
+                    return JSONResponse({"status": "duplicate"}, status_code=200)
+                return JSONResponse({"status": "ignored_unregistered_channel"}, status_code=200)
+
             is_new = record_webhook_event(
                 conn,
                 event_message_id=kick_event_message_id,
@@ -85,6 +125,7 @@ async def kick_webhook(
                 event_version=kick_event_version,
                 subscription_id=kick_event_subscription_id,
                 processed_ok=True,
+                channel_slug=channel.channel_slug,
             )
             if not is_new:
                 logger.info("Duplicate event %s — acknowledging", kick_event_message_id)
@@ -96,14 +137,14 @@ async def kick_webhook(
                     conn,
                     payload,
                     event_message_id=kick_event_message_id,
-                    channel_slug=settings.kick_channel_slug,
+                    channel_slug=channel.channel_slug,
                     source="webhook",
                 )
             elif kick_event_type == "livestream.status.updated":
                 handle_livestream_status(
                     conn,
                     payload,
-                    channel_slug=settings.kick_channel_slug,
+                    channel_slug=channel.channel_slug,
                 )
             else:
                 logger.info("Ignoring unhandled event type %s", kick_event_type)
@@ -111,8 +152,6 @@ async def kick_webhook(
             conn.commit()
     except Exception:
         logger.exception("Failed processing webhook %s", kick_event_message_id)
-        # Still return 200 for unknown event types we intentionally ignore;
-        # for real failures return 500 so Kick retries a few times.
         raise HTTPException(status_code=500, detail="Processing failed")
 
     return JSONResponse({"status": "ok"}, status_code=200)

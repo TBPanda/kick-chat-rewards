@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "snowflake-kick-chat": {
-      "url": "https://<ORG>-<ACCOUNT>.snowflakecomputing.com/api/v2/databases/KICK_CHAT/schemas/AMIRPHANTHOM/mcp-servers/KICK_CHAT_MCP",
+      "url": "https://<ORG>-<ACCOUNT>.snowflakecomputing.com/api/v2/databases/KICK_CHAT/schemas/CORE/mcp-servers/KICK_CHAT_MCP",
       "headers": {
         "Authorization": "Bearer <SNOWFLAKE_PAT_OR_TOKEN>"
       }

@@ -37,6 +37,15 @@ Then in **Snowsight** (worksheet role = ACCOUNTADMIN):
 
    If `RSA_PUBLIC_KEY_FP` is empty or different, Railway will keep failing with **JWT token is invalid (390144)**.
 
+## 3b. Multi-channel schema (CORE)
+
+After deploying multi-channel code:
+
+1. Locally (or Snowsight): `python scripts/apply_sql.py` then `python scripts/apply_sql.py --migrate-legacy`
+2. Railway Variables: set `SNOWFLAKE_SCHEMA=CORE` (was `AMIRPHANTHOM`)
+3. Redeploy so the service uses CORE
+4. Confirm: `SELECT CHANNEL_SLUG, COUNT(*) FROM KICK_CHAT.CORE.CHAT_MESSAGES GROUP BY 1;`
+
 ## 4. Environment variables (Railway → Variables)
 
 ```
@@ -51,7 +60,7 @@ SNOWFLAKE_USER=TBPANDA
 SNOWFLAKE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n
 SNOWFLAKE_WAREHOUSE=COMPUTE_WH
 SNOWFLAKE_DATABASE=KICK_CHAT
-SNOWFLAKE_SCHEMA=AMIRPHANTHOM
+SNOWFLAKE_SCHEMA=CORE
 SNOWFLAKE_ROLE=SYSADMIN
 
 REPORT_PASSWORD=
@@ -94,6 +103,6 @@ PYTHONPATH=. python scripts/subscribe_kick_events.py
 ## 8. Smoke test
 
 - Someone sends a chat message in AmirPhanThom’s Kick chat while live (or when chat is available).
-- In Snowflake: `SELECT * FROM KICK_CHAT.AMIRPHANTHOM.CHAT_MESSAGES ORDER BY INGESTED_AT DESC LIMIT 20;`
+- In Snowflake: `SELECT * FROM KICK_CHAT.CORE.CHAT_MESSAGES ORDER BY INGESTED_AT DESC LIMIT 20;`
 
 If nothing lands: check Railway logs for signature/Snowflake errors, and `python scripts/subscribe_kick_events.py --list`.
