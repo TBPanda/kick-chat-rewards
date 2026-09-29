@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
@@ -19,9 +20,12 @@ from ingest.snowflake_writer import (
     snowflake_connection,
 )
 
+# Railway treats stderr as severity=error; keep INFO on stdout.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True,
 )
 logger = logging.getLogger("kick_webhook")
 
