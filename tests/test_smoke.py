@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from ingest.channels import extract_payload_channel_hints  # noqa: E402
+from ingest.kick_api import subscriptions_by_broadcaster  # noqa: E402
 from ingest.signature import verify_kick_signature  # noqa: E402
 from ingest.snowflake_writer import (  # noqa: E402
     is_command_message,
@@ -99,6 +100,29 @@ def test_normalize_flat_and_kick_shaped() -> None:
     assert kick["username"] == "bob"
 
 
+def test_subscriptions_by_broadcaster() -> None:
+    payload = {
+        "data": [
+            {
+                "broadcaster_user_id": 538671,
+                "event": "livestream.status.updated",
+            },
+            {
+                "broadcaster_user_id": 538671,
+                "event": "chat.message.sent",
+            },
+            {
+                "broadcaster_user_id": 1,
+                "event": "chat.message.sent",
+            },
+        ]
+    }
+    by_bc = subscriptions_by_broadcaster(payload)
+    assert by_bc[538671] == {"livestream.status.updated", "chat.message.sent"}
+    assert by_bc[1] == {"chat.message.sent"}
+    assert subscriptions_by_broadcaster({"data": []}) == {}
+
+
 def test_signature_roundtrip() -> None:
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_pem = private_key.public_key().public_bytes(
@@ -134,5 +158,6 @@ if __name__ == "__main__":
     test_payload_channel_hints()
     test_should_skip_kicklet_promos_keep_follows()
     test_normalize_flat_and_kick_shaped()
+    test_subscriptions_by_broadcaster()
     test_signature_roundtrip()
     print("All tests passed.")

@@ -4,21 +4,18 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import sys
-from typing import Any
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from ingest.channels import extract_payload_channel_hints, resolve_registered_channel
 from ingest.config import get_settings
 from ingest.signature import verify_kick_signature
-from ingest.snowflake_writer import (
-    handle_chat_message_sent,
-    handle_livestream_status,
-    record_webhook_event,
-    snowflake_connection,
-)
+from ingest.subscription_watchdog import get_subscription_watchdog
+from ingest.webhook_worker import WebhookJob, get_webhook_worker
 
 # Railway treats stderr as severity=error; keep INFO on stdout.
 logging.basicConfig(
@@ -29,16 +26,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger("kick_webhook")
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+    worker = get_webhook_worker()
+    worker.start()
+    watchdog = get_subscription_watchdog()
+    if settings.subscription_watchdog_enabled:
+        watchdog.start()
+    else:
+        logger.warning("Subscription watchdog disabled via config")
+    try:
+        yield
+    finally:
+        watchdog.stop()
+        worker.stop()
+
+
 app = FastAPI(
     title="Kick Chat Activity Ingest",
     description="Receives Kick webhooks for registered channels (multi-channel CORE)",
-    version="0.2.0",
+    version="0.3.0",
+    lifespan=lifespan,
 )
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, Any]:
+    worker = get_webhook_worker()
+    watchdog = get_subscription_watchdog()
+    return {
+        "status": "ok",
+        "worker": worker.stats,
+        "watchdog": watchdog.status,
+    }
 
 
 @app.post("/webhooks/kick")
@@ -81,81 +103,18 @@ async def kick_webhook(
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
 
-    hint_slug, hint_bc_id = extract_payload_channel_hints(payload)
-
+    job = WebhookJob(
+        event_message_id=kick_event_message_id,
+        event_type=kick_event_type,
+        event_version=kick_event_version,
+        subscription_id=kick_event_subscription_id,
+        payload=payload,
+    )
     try:
-        with snowflake_connection(settings) as conn:
-            channel = resolve_registered_channel(
-                conn,
-                channel_slug=hint_slug,
-                broadcaster_user_id=hint_bc_id,
-            )
-            # Fallback for early payloads missing broadcaster: env bootstrap channel
-            if channel is None and not hint_slug and not hint_bc_id:
-                channel = resolve_registered_channel(
-                    conn,
-                    channel_slug=settings.kick_channel_slug,
-                    broadcaster_user_id=settings.kick_broadcaster_user_id,
-                )
+        get_webhook_worker().enqueue(job)
+    except queue.Full as exc:
+        logger.error("Webhook queue full — rejecting %s", kick_event_message_id)
+        raise HTTPException(status_code=503, detail="Ingest queue full") from exc
 
-            resolved_slug = channel.channel_slug if channel else hint_slug
-
-            if channel is None:
-                logger.warning(
-                    "Ignoring event %s for unregistered channel slug=%s broadcaster_id=%s",
-                    kick_event_message_id,
-                    hint_slug,
-                    hint_bc_id,
-                )
-                is_new = record_webhook_event(
-                    conn,
-                    event_message_id=kick_event_message_id,
-                    event_type=kick_event_type,
-                    event_version=kick_event_version,
-                    subscription_id=kick_event_subscription_id,
-                    processed_ok=True,
-                    error_message="unregistered_channel",
-                    channel_slug=resolved_slug,
-                )
-                conn.commit()
-                if not is_new:
-                    return JSONResponse({"status": "duplicate"}, status_code=200)
-                return JSONResponse({"status": "ignored_unregistered_channel"}, status_code=200)
-
-            is_new = record_webhook_event(
-                conn,
-                event_message_id=kick_event_message_id,
-                event_type=kick_event_type,
-                event_version=kick_event_version,
-                subscription_id=kick_event_subscription_id,
-                processed_ok=True,
-                channel_slug=channel.channel_slug,
-            )
-            if not is_new:
-                logger.info("Duplicate event %s — acknowledging", kick_event_message_id)
-                conn.commit()
-                return JSONResponse({"status": "duplicate"}, status_code=200)
-
-            if kick_event_type == "chat.message.sent":
-                handle_chat_message_sent(
-                    conn,
-                    payload,
-                    event_message_id=kick_event_message_id,
-                    channel_slug=channel.channel_slug,
-                    source="webhook",
-                )
-            elif kick_event_type == "livestream.status.updated":
-                handle_livestream_status(
-                    conn,
-                    payload,
-                    channel_slug=channel.channel_slug,
-                )
-            else:
-                logger.info("Ignoring unhandled event type %s", kick_event_type)
-
-            conn.commit()
-    except Exception:
-        logger.exception("Failed processing webhook %s", kick_event_message_id)
-        raise HTTPException(status_code=500, detail="Processing failed")
-
-    return JSONResponse({"status": "ok"}, status_code=200)
+    # Ack immediately so Kick does not time out / drop the subscription.
+    return JSONResponse({"status": "accepted"}, status_code=200)

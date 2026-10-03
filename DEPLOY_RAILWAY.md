@@ -106,3 +106,5 @@ PYTHONPATH=. python scripts/subscribe_kick_events.py
 - In Snowflake: `SELECT * FROM KICK_CHAT.CORE.CHAT_MESSAGES ORDER BY INGESTED_AT DESC LIMIT 20;`
 
 If nothing lands: check Railway logs for signature/Snowflake errors, and `python scripts/subscribe_kick_events.py --list`.
+
+The ingest service acks Kick immediately and writes Snowflake on a background worker. A subscription watchdog (every `SUBSCRIPTION_WATCHDOG_INTERVAL_SEC`, default 120s) re-adds `chat.message.sent` / `livestream.status.updated` if Kick drops them. `GET /health` exposes worker queue depth and watchdog status.
