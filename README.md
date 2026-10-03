@@ -57,6 +57,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 Health: `GET /health` · Webhook: `POST /webhooks/kick`
 
+Webhooks are acknowledged immediately; Snowflake writes run on a background worker. A subscription watchdog re-subscribes if Kick drops `chat.message.sent`.
+
 Events for channels **not** in `CHANNELS` are acknowledged but not stored.
 
 ### 3. Subscribe channels

@@ -76,8 +76,8 @@ def _load_private_key_bytes(pem: str, passphrase: str | None) -> bytes:
     )
 
 
-@contextmanager
-def snowflake_connection(settings: Settings | None = None) -> Iterator[Any]:
+def open_snowflake_connection(settings: Settings | None = None) -> Any:
+    """Open a Snowflake connection (caller must close)."""
     s = settings or get_settings()
     if not s.snowflake_account or not s.snowflake_user:
         raise RuntimeError(
@@ -107,7 +107,12 @@ def snowflake_connection(settings: Settings | None = None) -> Iterator[Any]:
             "or SNOWFLAKE_PASSWORD in the environment."
         )
 
-    conn = snowflake.connector.connect(**connect_kwargs)
+    return snowflake.connector.connect(**connect_kwargs)
+
+
+@contextmanager
+def snowflake_connection(settings: Settings | None = None) -> Iterator[Any]:
+    conn = open_snowflake_connection(settings)
     try:
         yield conn
     finally:

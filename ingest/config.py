@@ -39,6 +39,9 @@ class Settings:
     report_password: str
     host: str
     port: int
+    # Re-subscribe missing Kick events (seconds; min 30 enforced in watchdog)
+    subscription_watchdog_interval_sec: float
+    subscription_watchdog_enabled: bool
 
 
 def _env(name: str, default: str = "") -> str:
@@ -67,4 +70,11 @@ def get_settings() -> Settings:
         report_password=_env("REPORT_PASSWORD", "changeme"),
         host=_env("HOST", "0.0.0.0"),
         port=int(_env("PORT", "8000")),
+        subscription_watchdog_interval_sec=float(
+            _env("SUBSCRIPTION_WATCHDOG_INTERVAL_SEC", "120")
+        ),
+        subscription_watchdog_enabled=_env(
+            "SUBSCRIPTION_WATCHDOG_ENABLED", "true"
+        ).lower()
+        in ("1", "true", "yes"),
     )
