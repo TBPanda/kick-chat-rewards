@@ -1,4 +1,4 @@
-"""Background webhook processor: ack Kick fast, write Snowflake on a worker thread."""
+"""Background webhook processor: ack Kick fast, write Postgres on a worker thread."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from typing import Any
 
 from ingest.channels import extract_payload_channel_hints, resolve_registered_channel
 from ingest.config import Settings, get_settings
-from ingest.snowflake_writer import (
+from ingest.db import (
     handle_chat_message_sent,
     handle_livestream_status,
-    open_snowflake_connection,
+    open_connection,
     record_webhook_event,
 )
 
@@ -34,7 +34,7 @@ class WebhookJob:
 
 
 class WebhookWorker:
-    """Single-threaded queue consumer with a long-lived Snowflake connection."""
+    """Single-threaded queue consumer with a long-lived Postgres connection."""
 
     def __init__(
         self,
@@ -71,7 +71,7 @@ class WebhookWorker:
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run,
-            name="webhook-snowflake-worker",
+            name="webhook-postgres-worker",
             daemon=True,
         )
         self._thread.start()
@@ -102,8 +102,8 @@ class WebhookWorker:
                 break
             try:
                 if conn is None:
-                    conn = open_snowflake_connection(self._settings)
-                    logger.info("Webhook worker Snowflake connection ready")
+                    conn = open_connection(self._settings)
+                    logger.info("Webhook worker Postgres connection ready")
                 self._process(conn, job)
                 with self._lock:
                     self._processed += 1
@@ -143,7 +143,7 @@ class WebhookWorker:
         try:
             conn.close()
         except Exception:
-            logger.exception("Error closing Snowflake connection")
+            logger.exception("Error closing Postgres connection")
         return None
 
     def _process(self, conn: Any, job: WebhookJob) -> None:

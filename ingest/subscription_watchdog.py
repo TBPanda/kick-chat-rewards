@@ -18,7 +18,7 @@ from ingest.kick_api import (
     subscribe,
     subscriptions_by_broadcaster,
 )
-from ingest.snowflake_writer import snowflake_connection
+from ingest.db import db_connection, prune_old_webhook_events
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,11 @@ class SubscriptionWatchdog:
         required = {e["name"].lower() for e in REQUIRED_EVENTS}
 
         targets: list[tuple[str, int]] = []
-        with snowflake_connection(settings) as conn:
+        with db_connection(settings) as conn:
+            deleted = prune_old_webhook_events(conn)
+            if deleted:
+                conn.commit()
+                logger.info("Pruned %s old webhook_events", deleted)
             for ch in list_active_channels(conn):
                 if ch.broadcaster_user_id is not None:
                     targets.append((ch.channel_slug, ch.broadcaster_user_id))
@@ -140,7 +144,7 @@ class SubscriptionWatchdog:
             )
             result = subscribe(token, broadcaster_id)
             chat_sub, live_sub = extract_subscription_ids(result)
-            with snowflake_connection(settings) as conn:
+            with db_connection(settings) as conn:
                 upsert_channel(
                     conn,
                     channel_slug=slug,

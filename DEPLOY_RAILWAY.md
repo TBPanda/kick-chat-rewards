@@ -18,33 +18,20 @@ Save **Client ID** and **Client Secret** for Railway variables.
 4. After first deploy, open the service → **Settings → Networking → Generate Domain**  
    (temporary `*.up.railway.app` URL). Confirm `https://YOUR.up.railway.app/health` returns `{"status":"ok"}`.
 
-## 3. Snowflake key-pair auth (required — MFA blocks password on Railway)
+## 3. Add Railway Postgres
 
-Your human Snowflake user needs MFA, which cannot be used with a password from Railway. Attach an **RSA public key** to your existing user (`TBPANDA`) instead:
+1. In the same project: **New** → **Database** → **PostgreSQL**.
+2. Link it to the web/ingest service (or copy `DATABASE_URL` into that service’s Variables).
+3. From your laptop (with `DATABASE_URL` in `.env`):
 
 ```bash
-# On your laptop (already done if .secrets/ exists)
-bash scripts/generate_snowflake_keys.sh
+pip install -r requirements.txt
+PYTHONPATH=. python scripts/apply_sql.py
+PYTHONPATH=. python scripts/subscribe_kick_events.py --resolve-slug amirphanthom
+PYTHONPATH=. python scripts/subscribe_kick_events.py
 ```
 
-Then in **Snowsight** (worksheet role = ACCOUNTADMIN):
-
-1. Run `.secrets/004_service_user_READY.sql` (or `sql/004_service_user.sql` with the public key pasted in)
-2. That runs: `ALTER USER TBPANDA SET RSA_PUBLIC_KEY='...'`
-3. Confirm with `DESC USER TBPANDA` — property `RSA_PUBLIC_KEY_FP` must equal:
-
-   `SHA256:p0eE9CdNOUepfrzUUgNGeDlejCfrWN7eIR94ThXX5DM=`
-
-   If `RSA_PUBLIC_KEY_FP` is empty or different, Railway will keep failing with **JWT token is invalid (390144)**.
-
-## 3b. Multi-channel schema (CORE)
-
-After deploying multi-channel code:
-
-1. Locally (or Snowsight): `python scripts/apply_sql.py` then `python scripts/apply_sql.py --migrate-legacy`
-2. Railway Variables: set `SNOWFLAKE_SCHEMA=CORE` (was `AMIRPHANTHOM`)
-3. Redeploy so the service uses CORE
-4. Confirm: `SELECT CHANNEL_SLUG, COUNT(*) FROM KICK_CHAT.CORE.CHAT_MESSAGES GROUP BY 1;`
+Migrating existing Snowflake data? Follow [CUTOVER.md](CUTOVER.md).
 
 ## 4. Environment variables (Railway → Variables)
 
@@ -55,32 +42,24 @@ KICK_BROADCASTER_USER_ID=538671
 KICK_CHANNEL_SLUG=amirphanthom
 KICK_WEBHOOK_SKIP_VERIFY=false
 
-SNOWFLAKE_ACCOUNT=JSYRLUG-UD75577
-SNOWFLAKE_USER=TBPANDA
-SNOWFLAKE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n
-SNOWFLAKE_WAREHOUSE=COMPUTE_WH
-SNOWFLAKE_DATABASE=KICK_CHAT
-SNOWFLAKE_SCHEMA=CORE
-SNOWFLAKE_ROLE=SYSADMIN
+DATABASE_URL=   # from Railway Postgres (often auto-injected when linked)
 
 REPORT_PASSWORD=
 ```
 
-- Paste the **single-line** private key the script prints (newlines as `\n`).
-- **Remove** `SNOWFLAKE_PASSWORD` if it is set — key-pair takes precedence when `SNOWFLAKE_PRIVATE_KEY` is present.
-- Redeploy after saving vars.
+Do **not** set `SNOWFLAKE_*` on the running service after cutover.
 
 ## 5. Custom domain `chat.amirphanthom.com`
 
 1. Railway service → **Settings → Networking → Custom Domain** → add `chat.amirphanthom.com`.
-2. Railway shows a **CNAME** target (often `xxxx.up.railway.app` or a railway-provided host).
-3. In your DNS for `amirphanthom.com` (wherever you bought it — Cloudflare, Namecheap, Google Domains, etc.):
+2. Railway shows a **CNAME** target.
+3. In DNS for `amirphanthom.com`:
 
 | Type  | Name  | Value                         | TTL  |
 |-------|-------|-------------------------------|------|
 | CNAME | chat  | *(value Railway shows you)*   | Auto |
 
-4. Wait for Railway to show the domain as **Verified** / SSL ready (can take a few minutes).
+4. Wait for Verified / SSL ready.
 5. Test: `https://chat.amirphanthom.com/health` → `{"status":"ok"}`.
 
 ## 6. Turn on Kick webhooks
@@ -89,22 +68,11 @@ REPORT_PASSWORD=
 2. Webhook URL: `https://chat.amirphanthom.com/webhooks/kick`
 3. Save
 
-## 7. Apply Snowflake SQL + subscribe events (from your laptop)
+## 7. Smoke test
 
-```bash
-cd kick-chat-rewards
-source .venv/bin/activate
-cp .env.example .env   # fill same secrets as Railway
-PYTHONPATH=. python scripts/apply_sql.py
-PYTHONPATH=. python scripts/subscribe_kick_events.py --resolve-slug amirphanthom
-PYTHONPATH=. python scripts/subscribe_kick_events.py
-```
+- Someone sends a chat message in the tracked Kick channel.
+- In Postgres: `SELECT * FROM chat_messages ORDER BY ingested_at DESC LIMIT 20;`
 
-## 8. Smoke test
+If nothing lands: check Railway logs for signature/Postgres errors, and `python scripts/subscribe_kick_events.py --list`.
 
-- Someone sends a chat message in AmirPhanThom’s Kick chat while live (or when chat is available).
-- In Snowflake: `SELECT * FROM KICK_CHAT.CORE.CHAT_MESSAGES ORDER BY INGESTED_AT DESC LIMIT 20;`
-
-If nothing lands: check Railway logs for signature/Snowflake errors, and `python scripts/subscribe_kick_events.py --list`.
-
-The ingest service acks Kick immediately and writes Snowflake on a background worker. A subscription watchdog (every `SUBSCRIPTION_WATCHDOG_INTERVAL_SEC`, default 120s) re-adds `chat.message.sent` / `livestream.status.updated` if Kick drops them. `GET /health` exposes worker queue depth and watchdog status.
+The ingest service acks Kick immediately and writes Postgres on a background worker. A subscription watchdog (every `SUBSCRIPTION_WATCHDOG_INTERVAL_SEC`, default 120s) re-adds required events if Kick drops them. `GET /health` exposes worker queue depth and watchdog status.

@@ -14,11 +14,11 @@ sys.path.insert(0, str(ROOT))
 
 from ingest.channels import list_active_channels  # noqa: E402
 from ingest.config import get_settings  # noqa: E402
-from ingest.snowflake_writer import (  # noqa: E402
+from ingest.db import (  # noqa: E402
+    db_connection,
     query_leaderboard,
     query_user_cross_channel,
     query_user_messages,
-    snowflake_connection,
 )
 
 st.set_page_config(
@@ -51,14 +51,14 @@ def main() -> None:
         return
 
     st.title("Kick Chat Activity")
-    st.caption("Reward active Kick chatters — multi-channel data from Snowflake CORE")
+    st.caption("Reward active Kick chatters — multi-channel data from Postgres")
 
     try:
-        with snowflake_connection() as conn:
+        with db_connection() as conn:
             channels = list_active_channels(conn)
     except Exception as exc:
-        st.error(f"Snowflake connection failed: {exc}")
-        st.info("Copy `.env.example` to `.env` and set SNOWFLAKE_SCHEMA=CORE.")
+        st.error(f"Postgres connection failed: {exc}")
+        st.info("Copy `.env.example` to `.env` and set DATABASE_URL.")
         return
 
     if not channels:
@@ -88,7 +88,7 @@ def main() -> None:
             exclude_commands = st.checkbox("Exclude !commands", value=True)
 
         try:
-            with snowflake_connection() as conn:
+            with db_connection() as conn:
                 rows = query_leaderboard(
                     conn,
                     channel_slug=channel_slug,
@@ -141,7 +141,7 @@ def main() -> None:
         pick = st.selectbox("Select user", options=usernames, key="lb_user")
         if pick:
             user_id = int(df.loc[df["username"] == pick, "kick_user_id"].iloc[0])
-            with snowflake_connection() as conn:
+            with db_connection() as conn:
                 msgs = query_user_messages(
                     conn,
                     kick_user_id=user_id,
@@ -183,7 +183,7 @@ def main() -> None:
                 st.error("Enter a username or Kick user id.")
             else:
                 try:
-                    with snowflake_connection() as conn:
+                    with db_connection() as conn:
                         cross = query_user_cross_channel(
                             conn,
                             kick_user_id=kick_id,
