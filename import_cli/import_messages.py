@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import historical chat messages from CSV or JSON into Snowflake.
+"""Import historical chat messages from CSV or JSON into Postgres.
 
 Does NOT scrape StreamerStats (prohibited by their ToS). Use only for
 lawful manual exports or other permitted dumps.
@@ -31,11 +31,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from ingest.config import get_settings  # noqa: E402
-from ingest.snowflake_writer import (  # noqa: E402
+from ingest.db import (  # noqa: E402
     _parse_ts,
+    db_connection,
     insert_chat_message,
     should_skip_chat_message,
-    snowflake_connection,
     upsert_channel_user,
 )
 
@@ -118,7 +118,7 @@ def iter_rows(path: Path) -> Iterator[dict[str, Any]]:
 
 @click.command()
 @click.argument("path", type=click.Path(exists=True, path_type=Path))
-@click.option("--dry-run", is_flag=True, help="Parse and count only; no Snowflake writes")
+@click.option("--dry-run", is_flag=True, help="Parse and count only; no database writes")
 @click.option("--limit", type=int, default=None, help="Max rows to import")
 def main(path: Path, dry_run: bool, limit: int | None) -> None:
     """Import historical chat from CSV or JSON into CHAT_MESSAGES."""
@@ -146,7 +146,7 @@ def main(path: Path, dry_run: bool, limit: int | None) -> None:
 
     inserted = 0
     duplicates = 0
-    with snowflake_connection(settings) as conn:
+    with db_connection(settings) as conn:
         for row in normalized:
             created_at = _parse_ts(str(row["created_at"]))
             ok = insert_chat_message(

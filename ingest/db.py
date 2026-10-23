@@ -1,4 +1,4 @@
-"""Snowflake connection and idempotent writers for chat + stream events."""
+"""Postgres connection and idempotent writers for chat + stream events."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ from datetime import datetime, timezone
 from typing import Any, Iterator
 from uuid import uuid4
 
-import snowflake.connector
-from cryptography.hazmat.primitives import serialization
-from snowflake.connector import DictCursor
+import psycopg
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from ingest.config import Settings, get_settings
 
@@ -60,59 +60,20 @@ def should_skip_chat_message(username: str | None, content: str | None) -> bool:
     return not is_kicklet_follow_notification(content)
 
 
-def _load_private_key_bytes(pem: str, passphrase: str | None) -> bytes:
-    """Load PEM private key and return DER bytes for snowflake-connector."""
-    # Support Railway env values that use literal \n instead of real newlines
-    normalized = pem.strip().replace("\\n", "\n")
-    password = passphrase.encode("utf-8") if passphrase else None
-    key = serialization.load_pem_private_key(
-        normalized.encode("utf-8"),
-        password=password,
-    )
-    return key.private_bytes(
-        encoding=serialization.Encoding.DER,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-
-
-def open_snowflake_connection(settings: Settings | None = None) -> Any:
-    """Open a Snowflake connection (caller must close)."""
+def open_connection(settings: Settings | None = None) -> psycopg.Connection:
+    """Open a Postgres connection (caller must close)."""
     s = settings or get_settings()
-    if not s.snowflake_account or not s.snowflake_user:
+    if not s.database_url:
         raise RuntimeError(
-            "Snowflake credentials missing. Set SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, "
-            "and either SNOWFLAKE_PRIVATE_KEY (recommended) or SNOWFLAKE_PASSWORD."
+            "DATABASE_URL is missing. Add Railway Postgres and set DATABASE_URL "
+            "(or a local postgres:// URL)."
         )
-
-    connect_kwargs: dict[str, Any] = {
-        "account": s.snowflake_account,
-        "user": s.snowflake_user,
-        "warehouse": s.snowflake_warehouse,
-        "database": s.snowflake_database,
-        "schema": s.snowflake_schema,
-        "role": s.snowflake_role,
-    }
-
-    if s.snowflake_private_key.strip():
-        connect_kwargs["private_key"] = _load_private_key_bytes(
-            s.snowflake_private_key,
-            s.snowflake_private_key_passphrase or None,
-        )
-    elif s.snowflake_password:
-        connect_kwargs["password"] = s.snowflake_password
-    else:
-        raise RuntimeError(
-            "Set SNOWFLAKE_PRIVATE_KEY (recommended; avoids MFA) "
-            "or SNOWFLAKE_PASSWORD in the environment."
-        )
-
-    return snowflake.connector.connect(**connect_kwargs)
+    return psycopg.connect(s.database_url, row_factory=dict_row)
 
 
 @contextmanager
-def snowflake_connection(settings: Settings | None = None) -> Iterator[Any]:
-    conn = open_snowflake_connection(settings)
+def db_connection(settings: Settings | None = None) -> Iterator[psycopg.Connection]:
+    conn = open_connection(settings)
     try:
         yield conn
     finally:
@@ -130,6 +91,12 @@ def _parse_ts(value: str | None) -> datetime:
         return datetime.now(timezone.utc)
 
 
+def _jsonb(payload: dict[str, Any] | None) -> Jsonb | None:
+    if payload is None:
+        return None
+    return Jsonb(payload)
+
+
 def record_webhook_event(
     conn: Any,
     *,
@@ -145,29 +112,17 @@ def record_webhook_event(
     Insert webhook envelope. Returns False if this event_message_id was already seen
     (duplicate delivery).
     """
-    cur = conn.cursor()
-    try:
+    with conn.cursor() as cur:
         cur.execute(
             """
-            MERGE INTO WEBHOOK_EVENTS t
-            USING (
-                SELECT
-                    %s AS EVENT_MESSAGE_ID,
-                    %s AS EVENT_TYPE,
-                    %s AS EVENT_VERSION,
-                    %s AS SUBSCRIPTION_ID,
-                    %s AS CHANNEL_SLUG,
-                    %s AS PROCESSED_OK,
-                    %s AS ERROR_MESSAGE
-            ) s
-            ON t.EVENT_MESSAGE_ID = s.EVENT_MESSAGE_ID
-            WHEN NOT MATCHED THEN INSERT (
-                EVENT_MESSAGE_ID, EVENT_TYPE, EVENT_VERSION, SUBSCRIPTION_ID,
-                CHANNEL_SLUG, PROCESSED_OK, ERROR_MESSAGE
+            INSERT INTO webhook_events (
+                event_message_id, event_type, event_version, subscription_id,
+                channel_slug, processed_ok, error_message
             ) VALUES (
-                s.EVENT_MESSAGE_ID, s.EVENT_TYPE, s.EVENT_VERSION, s.SUBSCRIPTION_ID,
-                s.CHANNEL_SLUG, s.PROCESSED_OK, s.ERROR_MESSAGE
+                %s, %s, %s, %s, %s, %s, %s
             )
+            ON CONFLICT (event_message_id) DO NOTHING
+            RETURNING event_message_id
             """,
             (
                 event_message_id,
@@ -179,10 +134,7 @@ def record_webhook_event(
                 error_message,
             ),
         )
-        # rowcount 1 = inserted; 0 = already existed
-        return cur.rowcount == 1
-    finally:
-        cur.close()
+        return cur.fetchone() is not None
 
 
 def upsert_channel_user(
@@ -195,34 +147,23 @@ def upsert_channel_user(
     is_verified: bool,
     seen_at: datetime,
 ) -> None:
-    cur = conn.cursor()
-    try:
+    with conn.cursor() as cur:
         cur.execute(
             """
-            MERGE INTO CHANNEL_USERS t
-            USING (
-                SELECT
-                    %s AS CHANNEL_SLUG,
-                    %s AS KICK_USER_ID,
-                    %s AS USERNAME,
-                    %s AS PROFILE_PICTURE,
-                    %s AS IS_VERIFIED,
-                    %s AS SEEN_AT
-            ) s
-            ON t.CHANNEL_SLUG = s.CHANNEL_SLUG AND t.KICK_USER_ID = s.KICK_USER_ID
-            WHEN MATCHED THEN UPDATE SET
-                USERNAME = s.USERNAME,
-                PROFILE_PICTURE = COALESCE(s.PROFILE_PICTURE, t.PROFILE_PICTURE),
-                IS_VERIFIED = s.IS_VERIFIED,
-                LAST_SEEN_AT = GREATEST(t.LAST_SEEN_AT, s.SEEN_AT),
-                MESSAGE_COUNT = t.MESSAGE_COUNT + 1
-            WHEN NOT MATCHED THEN INSERT (
-                CHANNEL_SLUG, KICK_USER_ID, USERNAME, PROFILE_PICTURE, IS_VERIFIED,
-                FIRST_SEEN_AT, LAST_SEEN_AT, MESSAGE_COUNT
+            INSERT INTO channel_users (
+                channel_slug, kick_user_id, username, profile_picture, is_verified,
+                first_seen_at, last_seen_at, message_count
             ) VALUES (
-                s.CHANNEL_SLUG, s.KICK_USER_ID, s.USERNAME, s.PROFILE_PICTURE, s.IS_VERIFIED,
-                s.SEEN_AT, s.SEEN_AT, 1
+                %s, %s, %s, %s, %s, %s, %s, 1
             )
+            ON CONFLICT (channel_slug, kick_user_id) DO UPDATE SET
+                username = EXCLUDED.username,
+                profile_picture = COALESCE(
+                    EXCLUDED.profile_picture, channel_users.profile_picture
+                ),
+                is_verified = EXCLUDED.is_verified,
+                last_seen_at = GREATEST(channel_users.last_seen_at, EXCLUDED.last_seen_at),
+                message_count = channel_users.message_count + 1
             """,
             (
                 channel_slug,
@@ -231,10 +172,9 @@ def upsert_channel_user(
                 profile_picture,
                 is_verified,
                 seen_at,
+                seen_at,
             ),
         )
-    finally:
-        cur.close()
 
 
 # Back-compat alias for imports that still say upsert_user
@@ -249,7 +189,7 @@ def upsert_user(
     seen_at: datetime,
 ) -> None:
     if not channel_slug:
-        raise ValueError("channel_slug is required for CHANNEL_USERS upsert")
+        raise ValueError("channel_slug is required for channel_users upsert")
     upsert_channel_user(
         conn,
         kick_user_id=kick_user_id,
@@ -276,34 +216,20 @@ def insert_chat_message(
     raw_payload: dict[str, Any] | None,
 ) -> bool:
     """Insert chat message. Returns True if inserted, False if duplicate message_id."""
-    cur = conn.cursor()
-    try:
+    settings = get_settings()
+    payload = raw_payload if settings.store_raw_payload else None
+    with conn.cursor() as cur:
         cur.execute(
             """
-            MERGE INTO CHAT_MESSAGES t
-            USING (
-                SELECT
-                    %s AS MESSAGE_ID,
-                    %s AS EVENT_MESSAGE_ID,
-                    %s AS CHANNEL_SLUG,
-                    %s AS BROADCASTER_USER_ID,
-                    %s AS KICK_USER_ID,
-                    %s AS USERNAME,
-                    %s AS CONTENT,
-                    %s AS CREATED_AT,
-                    %s AS SOURCE,
-                    %s AS IS_COMMAND,
-                    PARSE_JSON(%s) AS RAW_PAYLOAD
-            ) s
-            ON t.MESSAGE_ID = s.MESSAGE_ID
-            WHEN NOT MATCHED THEN INSERT (
-                MESSAGE_ID, EVENT_MESSAGE_ID, CHANNEL_SLUG, BROADCASTER_USER_ID,
-                KICK_USER_ID, USERNAME, CONTENT, CREATED_AT, SOURCE, IS_COMMAND, RAW_PAYLOAD
+            INSERT INTO chat_messages (
+                message_id, event_message_id, channel_slug, broadcaster_user_id,
+                kick_user_id, username, content, created_at, source, is_command,
+                raw_payload
             ) VALUES (
-                s.MESSAGE_ID, s.EVENT_MESSAGE_ID, s.CHANNEL_SLUG, s.BROADCASTER_USER_ID,
-                s.KICK_USER_ID, s.USERNAME, s.CONTENT, s.CREATED_AT, s.SOURCE,
-                s.IS_COMMAND, s.RAW_PAYLOAD
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
+            ON CONFLICT (message_id) DO NOTHING
+            RETURNING message_id
             """,
             (
                 message_id,
@@ -316,12 +242,10 @@ def insert_chat_message(
                 created_at,
                 source,
                 is_command_message(content),
-                json.dumps(raw_payload) if raw_payload is not None else None,
+                _jsonb(payload),
             ),
         )
-        return cur.rowcount == 1
-    finally:
-        cur.close()
+        return cur.fetchone() is not None
 
 
 def handle_chat_message_sent(
@@ -413,34 +337,23 @@ def handle_livestream_status(
     if not payload.get("started_at"):
         session_id = str(uuid4())
 
-    cur = conn.cursor()
-    try:
+    settings = get_settings()
+    raw = _jsonb(payload) if settings.store_raw_payload else None
+    with conn.cursor() as cur:
         if is_live:
             cur.execute(
                 """
-                MERGE INTO STREAM_SESSIONS t
-                USING (
-                    SELECT
-                        %s AS SESSION_ID,
-                        %s AS CHANNEL_SLUG,
-                        %s AS BROADCASTER_USER_ID,
-                        %s AS TITLE,
-                        %s AS STARTED_AT,
-                        PARSE_JSON(%s) AS RAW_PAYLOAD
-                ) s
-                ON t.SESSION_ID = s.SESSION_ID
-                WHEN MATCHED THEN UPDATE SET
-                    TITLE = COALESCE(s.TITLE, t.TITLE),
-                    IS_LIVE = TRUE,
-                    ENDED_AT = NULL,
-                    RAW_PAYLOAD = s.RAW_PAYLOAD
-                WHEN NOT MATCHED THEN INSERT (
-                    SESSION_ID, CHANNEL_SLUG, BROADCASTER_USER_ID, TITLE,
-                    STARTED_AT, ENDED_AT, IS_LIVE, RAW_PAYLOAD
+                INSERT INTO stream_sessions (
+                    session_id, channel_slug, broadcaster_user_id, title,
+                    started_at, ended_at, is_live, raw_payload
                 ) VALUES (
-                    s.SESSION_ID, s.CHANNEL_SLUG, s.BROADCASTER_USER_ID, s.TITLE,
-                    s.STARTED_AT, NULL, TRUE, s.RAW_PAYLOAD
+                    %s, %s, %s, %s, %s, NULL, TRUE, %s
                 )
+                ON CONFLICT (session_id) DO UPDATE SET
+                    title = COALESCE(EXCLUDED.title, stream_sessions.title),
+                    is_live = TRUE,
+                    ended_at = NULL,
+                    raw_payload = EXCLUDED.raw_payload
                 """,
                 (
                     session_id,
@@ -448,37 +361,23 @@ def handle_livestream_status(
                     int(bc_id) if bc_id is not None else None,
                     title,
                     started_at,
-                    json.dumps(payload),
+                    raw,
                 ),
             )
         else:
-            # End the open session matching started_at, or create closed row
             cur.execute(
                 """
-                MERGE INTO STREAM_SESSIONS t
-                USING (
-                    SELECT
-                        %s AS SESSION_ID,
-                        %s AS CHANNEL_SLUG,
-                        %s AS BROADCASTER_USER_ID,
-                        %s AS TITLE,
-                        %s AS STARTED_AT,
-                        %s AS ENDED_AT,
-                        PARSE_JSON(%s) AS RAW_PAYLOAD
-                ) s
-                ON t.SESSION_ID = s.SESSION_ID
-                WHEN MATCHED THEN UPDATE SET
-                    IS_LIVE = FALSE,
-                    ENDED_AT = COALESCE(s.ENDED_AT, CURRENT_TIMESTAMP()),
-                    TITLE = COALESCE(s.TITLE, t.TITLE),
-                    RAW_PAYLOAD = s.RAW_PAYLOAD
-                WHEN NOT MATCHED THEN INSERT (
-                    SESSION_ID, CHANNEL_SLUG, BROADCASTER_USER_ID, TITLE,
-                    STARTED_AT, ENDED_AT, IS_LIVE, RAW_PAYLOAD
+                INSERT INTO stream_sessions (
+                    session_id, channel_slug, broadcaster_user_id, title,
+                    started_at, ended_at, is_live, raw_payload
                 ) VALUES (
-                    s.SESSION_ID, s.CHANNEL_SLUG, s.BROADCASTER_USER_ID, s.TITLE,
-                    s.STARTED_AT, s.ENDED_AT, FALSE, s.RAW_PAYLOAD
+                    %s, %s, %s, %s, %s, %s, FALSE, %s
                 )
+                ON CONFLICT (session_id) DO UPDATE SET
+                    is_live = FALSE,
+                    ended_at = COALESCE(EXCLUDED.ended_at, NOW()),
+                    title = COALESCE(EXCLUDED.title, stream_sessions.title),
+                    raw_payload = EXCLUDED.raw_payload
                 """,
                 (
                     session_id,
@@ -487,12 +386,37 @@ def handle_livestream_status(
                     title,
                     started_at,
                     ended_at,
-                    json.dumps(payload),
+                    raw,
                 ),
             )
-    finally:
-        cur.close()
     return session_id
+
+
+def prune_old_webhook_events(conn: Any, *, retention_days: int | None = None) -> int:
+    """Delete webhook_events older than retention; returns rows deleted."""
+    days = (
+        retention_days
+        if retention_days is not None
+        else get_settings().webhook_events_retention_days
+    )
+    if days <= 0:
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM webhook_events
+            WHERE received_at < NOW() - (%s * INTERVAL '1 day')
+            """,
+            (days,),
+        )
+        return int(cur.rowcount or 0)
+
+
+def database_size_bytes(conn: Any) -> int:
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_database_size(current_database()) AS bytes")
+        row = cur.fetchone()
+        return int(row["bytes"] if isinstance(row, dict) else row[0])
 
 
 def query_leaderboard(
@@ -503,36 +427,33 @@ def query_leaderboard(
     limit: int = 50,
     exclude_commands: bool = True,
 ) -> list[dict[str, Any]]:
-    where = ["CHANNEL_SLUG = %s"]
+    where = ["channel_slug = %s"]
     params: list[Any] = [channel_slug]
     if exclude_commands:
-        where.append("NOT COALESCE(IS_COMMAND, FALSE)")
+        where.append("NOT COALESCE(is_command, FALSE)")
     if days is not None:
-        where.append("CREATED_AT >= DATEADD('DAY', %s, CURRENT_TIMESTAMP())")
-        params.append(-days)
+        where.append("created_at >= NOW() - (%s * INTERVAL '1 day')")
+        params.append(days)
     where_sql = "WHERE " + " AND ".join(where)
     params.append(limit)
     sql = f"""
         SELECT
-            CHANNEL_SLUG,
-            KICK_USER_ID,
-            MAX(USERNAME) AS USERNAME,
-            COUNT(*) AS MESSAGE_COUNT,
-            COUNT(DISTINCT DATE_TRUNC('DAY', CREATED_AT)::DATE) AS ACTIVE_DAYS,
-            MIN(CREATED_AT) AS FIRST_MESSAGE_AT,
-            MAX(CREATED_AT) AS LAST_MESSAGE_AT
-        FROM CHAT_MESSAGES
+            channel_slug,
+            kick_user_id,
+            MAX(username) AS username,
+            COUNT(*) AS message_count,
+            COUNT(DISTINCT (DATE_TRUNC('day', created_at))::DATE) AS active_days,
+            MIN(created_at) AS first_message_at,
+            MAX(created_at) AS last_message_at
+        FROM chat_messages
         {where_sql}
-        GROUP BY CHANNEL_SLUG, KICK_USER_ID
-        ORDER BY MESSAGE_COUNT DESC
+        GROUP BY channel_slug, kick_user_id
+        ORDER BY message_count DESC
         LIMIT %s
     """
-    cur = conn.cursor(DictCursor)
-    try:
+    with conn.cursor() as cur:
         cur.execute(sql, params)
         return list(cur.fetchall())
-    finally:
-        cur.close()
 
 
 def query_user_messages(
@@ -544,30 +465,27 @@ def query_user_messages(
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     params: list[Any] = [kick_user_id]
-    extras = ["KICK_USER_ID = %s"]
+    extras = ["kick_user_id = %s"]
     if channel_slug:
-        extras.append("CHANNEL_SLUG = %s")
+        extras.append("channel_slug = %s")
         params.append(channel_slug)
     if days is not None:
-        extras.append("CREATED_AT >= DATEADD('DAY', %s, CURRENT_TIMESTAMP())")
-        params.append(-days)
+        extras.append("created_at >= NOW() - (%s * INTERVAL '1 day')")
+        params.append(days)
     params.append(limit)
     where_sql = " AND ".join(extras)
-    cur = conn.cursor(DictCursor)
-    try:
+    with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT MESSAGE_ID, CHANNEL_SLUG, USERNAME, CONTENT, CREATED_AT, SOURCE, IS_COMMAND
-            FROM CHAT_MESSAGES
+            SELECT message_id, channel_slug, username, content, created_at, source, is_command
+            FROM chat_messages
             WHERE {where_sql}
-            ORDER BY CREATED_AT DESC
+            ORDER BY created_at DESC
             LIMIT %s
             """,
             params,
         )
         return list(cur.fetchall())
-    finally:
-        cur.close()
 
 
 def query_user_cross_channel(
@@ -579,41 +497,38 @@ def query_user_cross_channel(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     """Operator view: one Kick user's activity broken down by channel."""
-    where = ["NOT COALESCE(IS_COMMAND, FALSE)"]
+    where = ["NOT COALESCE(is_command, FALSE)"]
     params: list[Any] = []
     if kick_user_id is not None:
-        where.append("KICK_USER_ID = %s")
+        where.append("kick_user_id = %s")
         params.append(kick_user_id)
     if username:
-        where.append("LOWER(USERNAME) = LOWER(%s)")
+        where.append("LOWER(username) = LOWER(%s)")
         params.append(username)
     if days is not None:
-        where.append("CREATED_AT >= DATEADD('DAY', %s, CURRENT_TIMESTAMP())")
-        params.append(-days)
+        where.append("created_at >= NOW() - (%s * INTERVAL '1 day')")
+        params.append(days)
     if kick_user_id is None and not username:
         raise ValueError("Provide kick_user_id or username")
     params.append(limit)
     where_sql = " AND ".join(where)
-    cur = conn.cursor(DictCursor)
-    try:
+    with conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT
-                KICK_USER_ID,
-                MAX(USERNAME) AS USERNAME,
-                CHANNEL_SLUG,
-                COUNT(*) AS MESSAGE_COUNT,
-                COUNT(DISTINCT DATE_TRUNC('DAY', CREATED_AT)::DATE) AS ACTIVE_DAYS,
-                MIN(CREATED_AT) AS FIRST_MESSAGE_AT,
-                MAX(CREATED_AT) AS LAST_MESSAGE_AT
-            FROM CHAT_MESSAGES
+                kick_user_id,
+                MAX(username) AS username,
+                channel_slug,
+                COUNT(*) AS message_count,
+                COUNT(DISTINCT (DATE_TRUNC('day', created_at))::DATE) AS active_days,
+                MIN(created_at) AS first_message_at,
+                MAX(created_at) AS last_message_at
+            FROM chat_messages
             WHERE {where_sql}
-            GROUP BY KICK_USER_ID, CHANNEL_SLUG
-            ORDER BY MESSAGE_COUNT DESC
+            GROUP BY kick_user_id, channel_slug
+            ORDER BY message_count DESC
             LIMIT %s
             """,
             params,
         )
         return list(cur.fetchall())
-    finally:
-        cur.close()

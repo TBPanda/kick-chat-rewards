@@ -1,4 +1,4 @@
-"""Lightweight unit tests (no Snowflake / Kick credentials required)."""
+"""Lightweight unit tests (no Postgres / Kick credentials required)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 from ingest.channels import extract_payload_channel_hints  # noqa: E402
 from ingest.kick_api import subscriptions_by_broadcaster  # noqa: E402
 from ingest.signature import verify_kick_signature  # noqa: E402
-from ingest.snowflake_writer import (  # noqa: E402
+from ingest.db import (  # noqa: E402
     is_command_message,
     should_skip_chat_message,
 )

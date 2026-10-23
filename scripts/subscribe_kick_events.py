@@ -4,7 +4,7 @@
 Requires:
   - Kick Developer app with webhooks enabled and a public webhook URL set
   - KICK_CLIENT_ID / KICK_CLIENT_SECRET in .env
-  - Snowflake CHANNELS registry (sql/001_ddl.sql applied; SNOWFLAKE_SCHEMA=CORE)
+  - Postgres channels registry (sql/001_ddl.sql applied via DATABASE_URL)
 
 Usage:
   python scripts/subscribe_kick_events.py
@@ -35,7 +35,7 @@ from ingest.kick_api import (  # noqa: E402
     resolve_channel,
     subscribe,
 )
-from ingest.snowflake_writer import snowflake_connection  # noqa: E402
+from ingest.db import db_connection  # noqa: E402
 
 
 def subscribe_and_register(token: str, slug: str) -> None:
@@ -53,7 +53,7 @@ def subscribe_and_register(token: str, slug: str) -> None:
     print(json.dumps(result, indent=2))
     chat_sub, live_sub = extract_subscription_ids(result)
 
-    with snowflake_connection(settings) as conn:
+    with db_connection(settings) as conn:
         upsert_channel(
             conn,
             channel_slug=slug,
@@ -65,7 +65,7 @@ def subscribe_and_register(token: str, slug: str) -> None:
             status="active",
         )
         conn.commit()
-    print(f"Registered channel '{slug}' in Snowflake CHANNELS.")
+    print(f"Registered channel '{slug}' in Postgres channels.")
 
 
 def main() -> int:
@@ -137,7 +137,7 @@ def main() -> int:
             result = subscribe(token, args.broadcaster_user_id)
             print(json.dumps(result, indent=2))
             chat_sub, live_sub = extract_subscription_ids(result)
-            with snowflake_connection(settings) as conn:
+            with db_connection(settings) as conn:
                 upsert_channel(
                     conn,
                     channel_slug=slug,
@@ -147,7 +147,7 @@ def main() -> int:
                     livestream_subscription_id=live_sub,
                 )
                 conn.commit()
-            print(f"Registered channel '{slug}' in Snowflake CHANNELS.")
+            print(f"Registered channel '{slug}' in Postgres channels.")
         else:
             subscribe_and_register(token, slug)
 

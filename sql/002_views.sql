@@ -1,129 +1,120 @@
--- Activity views for rewards / reporting / MCP (multi-channel CORE)
-USE DATABASE KICK_CHAT;
-USE SCHEMA CORE;
+-- Activity views for rewards / reporting (Postgres)
 
--- Daily activity per user per channel
-CREATE OR REPLACE VIEW ACTIVITY_DAILY AS
+CREATE OR REPLACE VIEW activity_daily AS
 SELECT
-    CHANNEL_SLUG,
-    KICK_USER_ID,
-    USERNAME,
-    DATE_TRUNC('DAY', CREATED_AT)::DATE AS ACTIVITY_DATE,
-    COUNT(*) AS MESSAGE_COUNT,
-    COUNT_IF(NOT COALESCE(IS_COMMAND, FALSE)) AS NON_COMMAND_MESSAGE_COUNT,
-    MIN(CREATED_AT) AS FIRST_MESSAGE_AT,
-    MAX(CREATED_AT) AS LAST_MESSAGE_AT
-FROM CHAT_MESSAGES
+    channel_slug,
+    kick_user_id,
+    username,
+    (DATE_TRUNC('day', created_at))::DATE AS activity_date,
+    COUNT(*) AS message_count,
+    COUNT(*) FILTER (WHERE NOT COALESCE(is_command, FALSE)) AS non_command_message_count,
+    MIN(created_at) AS first_message_at,
+    MAX(created_at) AS last_message_at
+FROM chat_messages
 GROUP BY 1, 2, 3, 4;
 
--- Leaderboard: all-time per channel (non-command messages)
-CREATE OR REPLACE VIEW LEADERBOARD_ALL_TIME AS
+CREATE OR REPLACE VIEW leaderboard_all_time AS
 SELECT
-    CHANNEL_SLUG,
-    KICK_USER_ID,
-    MAX(USERNAME) AS USERNAME,
-    COUNT(*) AS MESSAGE_COUNT,
-    COUNT(DISTINCT DATE_TRUNC('DAY', CREATED_AT)::DATE) AS ACTIVE_DAYS,
-    MIN(CREATED_AT) AS FIRST_MESSAGE_AT,
-    MAX(CREATED_AT) AS LAST_MESSAGE_AT
-FROM CHAT_MESSAGES
-WHERE NOT COALESCE(IS_COMMAND, FALSE)
-GROUP BY CHANNEL_SLUG, KICK_USER_ID
-ORDER BY CHANNEL_SLUG, MESSAGE_COUNT DESC;
+    channel_slug,
+    kick_user_id,
+    MAX(username) AS username,
+    COUNT(*) AS message_count,
+    COUNT(DISTINCT (DATE_TRUNC('day', created_at))::DATE) AS active_days,
+    MIN(created_at) AS first_message_at,
+    MAX(created_at) AS last_message_at
+FROM chat_messages
+WHERE NOT COALESCE(is_command, FALSE)
+GROUP BY channel_slug, kick_user_id
+ORDER BY channel_slug, message_count DESC;
 
--- Leaderboard: last 7 days per channel
-CREATE OR REPLACE VIEW LEADERBOARD_7D AS
+CREATE OR REPLACE VIEW leaderboard_7d AS
 SELECT
-    CHANNEL_SLUG,
-    KICK_USER_ID,
-    MAX(USERNAME) AS USERNAME,
-    COUNT(*) AS MESSAGE_COUNT,
-    COUNT(DISTINCT DATE_TRUNC('DAY', CREATED_AT)::DATE) AS ACTIVE_DAYS,
-    MIN(CREATED_AT) AS FIRST_MESSAGE_AT,
-    MAX(CREATED_AT) AS LAST_MESSAGE_AT
-FROM CHAT_MESSAGES
-WHERE NOT COALESCE(IS_COMMAND, FALSE)
-  AND CREATED_AT >= DATEADD('DAY', -7, CURRENT_TIMESTAMP())
-GROUP BY CHANNEL_SLUG, KICK_USER_ID
-ORDER BY CHANNEL_SLUG, MESSAGE_COUNT DESC;
+    channel_slug,
+    kick_user_id,
+    MAX(username) AS username,
+    COUNT(*) AS message_count,
+    COUNT(DISTINCT (DATE_TRUNC('day', created_at))::DATE) AS active_days,
+    MIN(created_at) AS first_message_at,
+    MAX(created_at) AS last_message_at
+FROM chat_messages
+WHERE NOT COALESCE(is_command, FALSE)
+  AND created_at >= NOW() - INTERVAL '7 days'
+GROUP BY channel_slug, kick_user_id
+ORDER BY channel_slug, message_count DESC;
 
--- Leaderboard: last 30 days per channel
-CREATE OR REPLACE VIEW LEADERBOARD_30D AS
+CREATE OR REPLACE VIEW leaderboard_30d AS
 SELECT
-    CHANNEL_SLUG,
-    KICK_USER_ID,
-    MAX(USERNAME) AS USERNAME,
-    COUNT(*) AS MESSAGE_COUNT,
-    COUNT(DISTINCT DATE_TRUNC('DAY', CREATED_AT)::DATE) AS ACTIVE_DAYS,
-    MIN(CREATED_AT) AS FIRST_MESSAGE_AT,
-    MAX(CREATED_AT) AS LAST_MESSAGE_AT
-FROM CHAT_MESSAGES
-WHERE NOT COALESCE(IS_COMMAND, FALSE)
-  AND CREATED_AT >= DATEADD('DAY', -30, CURRENT_TIMESTAMP())
-GROUP BY CHANNEL_SLUG, KICK_USER_ID
-ORDER BY CHANNEL_SLUG, MESSAGE_COUNT DESC;
+    channel_slug,
+    kick_user_id,
+    MAX(username) AS username,
+    COUNT(*) AS message_count,
+    COUNT(DISTINCT (DATE_TRUNC('day', created_at))::DATE) AS active_days,
+    MIN(created_at) AS first_message_at,
+    MAX(created_at) AS last_message_at
+FROM chat_messages
+WHERE NOT COALESCE(is_command, FALSE)
+  AND created_at >= NOW() - INTERVAL '30 days'
+GROUP BY channel_slug, kick_user_id
+ORDER BY channel_slug, message_count DESC;
 
--- Cross-channel: same Kick user across channels (operator analytics)
-CREATE OR REPLACE VIEW USER_CHANNEL_ACTIVITY AS
+CREATE OR REPLACE VIEW user_channel_activity AS
 SELECT
-    KICK_USER_ID,
-    MAX(USERNAME) AS USERNAME,
-    CHANNEL_SLUG,
-    COUNT(*) AS MESSAGE_COUNT,
-    COUNT(DISTINCT DATE_TRUNC('DAY', CREATED_AT)::DATE) AS ACTIVE_DAYS,
-    MIN(CREATED_AT) AS FIRST_MESSAGE_AT,
-    MAX(CREATED_AT) AS LAST_MESSAGE_AT
-FROM CHAT_MESSAGES
-WHERE NOT COALESCE(IS_COMMAND, FALSE)
-GROUP BY KICK_USER_ID, CHANNEL_SLUG
-ORDER BY KICK_USER_ID, MESSAGE_COUNT DESC;
+    kick_user_id,
+    MAX(username) AS username,
+    channel_slug,
+    COUNT(*) AS message_count,
+    COUNT(DISTINCT (DATE_TRUNC('day', created_at))::DATE) AS active_days,
+    MIN(created_at) AS first_message_at,
+    MAX(created_at) AS last_message_at
+FROM chat_messages
+WHERE NOT COALESCE(is_command, FALSE)
+GROUP BY kick_user_id, channel_slug
+ORDER BY kick_user_id, message_count DESC;
 
-CREATE OR REPLACE VIEW USER_CROSS_CHANNEL_SUMMARY AS
+CREATE OR REPLACE VIEW user_cross_channel_summary AS
 SELECT
-    KICK_USER_ID,
-    MAX(USERNAME) AS USERNAME,
-    COUNT(DISTINCT CHANNEL_SLUG) AS CHANNEL_COUNT,
-    COUNT(*) AS TOTAL_MESSAGE_COUNT,
-    COUNT(DISTINCT DATE_TRUNC('DAY', CREATED_AT)::DATE) AS ACTIVE_DAYS,
-    MIN(CREATED_AT) AS FIRST_MESSAGE_AT,
-    MAX(CREATED_AT) AS LAST_MESSAGE_AT
-FROM CHAT_MESSAGES
-WHERE NOT COALESCE(IS_COMMAND, FALSE)
-GROUP BY KICK_USER_ID
-ORDER BY TOTAL_MESSAGE_COUNT DESC;
+    kick_user_id,
+    MAX(username) AS username,
+    COUNT(DISTINCT channel_slug) AS channel_count,
+    COUNT(*) AS total_message_count,
+    COUNT(DISTINCT (DATE_TRUNC('day', created_at))::DATE) AS active_days,
+    MIN(created_at) AS first_message_at,
+    MAX(created_at) AS last_message_at
+FROM chat_messages
+WHERE NOT COALESCE(is_command, FALSE)
+GROUP BY kick_user_id
+ORDER BY total_message_count DESC;
 
--- Messages attributed to known stream sessions (overlap on timestamp)
-CREATE OR REPLACE VIEW ACTIVITY_BY_STREAM AS
+CREATE OR REPLACE VIEW activity_by_stream AS
 SELECT
-    s.CHANNEL_SLUG,
-    s.SESSION_ID,
-    s.TITLE AS STREAM_TITLE,
-    s.STARTED_AT,
-    s.ENDED_AT,
-    m.KICK_USER_ID,
-    m.USERNAME,
-    COUNT(*) AS MESSAGE_COUNT
-FROM STREAM_SESSIONS s
-JOIN CHAT_MESSAGES m
-  ON m.CHANNEL_SLUG = s.CHANNEL_SLUG
- AND m.CREATED_AT >= s.STARTED_AT
- AND (s.ENDED_AT IS NULL OR m.CREATED_AT <= s.ENDED_AT)
-WHERE NOT COALESCE(m.IS_COMMAND, FALSE)
+    s.channel_slug,
+    s.session_id,
+    s.title AS stream_title,
+    s.started_at,
+    s.ended_at,
+    m.kick_user_id,
+    m.username,
+    COUNT(*) AS message_count
+FROM stream_sessions s
+JOIN chat_messages m
+  ON m.channel_slug = s.channel_slug
+ AND m.created_at >= s.started_at
+ AND (s.ended_at IS NULL OR m.created_at <= s.ended_at)
+WHERE NOT COALESCE(m.is_command, FALSE)
 GROUP BY 1, 2, 3, 4, 5, 6, 7;
 
--- Unique active stream-days per user per channel
-CREATE OR REPLACE VIEW STREAM_ACTIVE_DAYS AS
+CREATE OR REPLACE VIEW stream_active_days AS
 SELECT
-    m.CHANNEL_SLUG,
-    m.KICK_USER_ID,
-    MAX(m.USERNAME) AS USERNAME,
-    COUNT(DISTINCT DATE_TRUNC('DAY', s.STARTED_AT)::DATE) AS ACTIVE_STREAM_DAYS,
-    COUNT(*) AS MESSAGES_DURING_STREAMS
-FROM STREAM_SESSIONS s
-JOIN CHAT_MESSAGES m
-  ON m.CHANNEL_SLUG = s.CHANNEL_SLUG
- AND m.CREATED_AT >= s.STARTED_AT
- AND (s.ENDED_AT IS NULL OR m.CREATED_AT <= s.ENDED_AT)
-WHERE NOT COALESCE(m.IS_COMMAND, FALSE)
-GROUP BY m.CHANNEL_SLUG, m.KICK_USER_ID
-ORDER BY m.CHANNEL_SLUG, ACTIVE_STREAM_DAYS DESC, MESSAGES_DURING_STREAMS DESC;
+    m.channel_slug,
+    m.kick_user_id,
+    MAX(m.username) AS username,
+    COUNT(DISTINCT (DATE_TRUNC('day', s.started_at))::DATE) AS active_stream_days,
+    COUNT(*) AS messages_during_streams
+FROM stream_sessions s
+JOIN chat_messages m
+  ON m.channel_slug = s.channel_slug
+ AND m.created_at >= s.started_at
+ AND (s.ended_at IS NULL OR m.created_at <= s.ended_at)
+WHERE NOT COALESCE(m.is_command, FALSE)
+GROUP BY m.channel_slug, m.kick_user_id
+ORDER BY m.channel_slug, active_stream_days DESC, messages_during_streams DESC;

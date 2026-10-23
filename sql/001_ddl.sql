@@ -1,116 +1,99 @@
--- Kick Chat Activity System — shared multi-channel schema (CORE)
--- Run as a role with CREATE DATABASE privilege (e.g. ACCOUNTADMIN or SYSADMIN).
---
--- Existing AMIRPHANTHOM data: after this file, run sql/005_migrate_amirphanthom_to_core.sql
+-- Kick Chat Activity System — Postgres schema
+-- Applied via: python scripts/apply_sql.py
+-- Requires DATABASE_URL (Railway Postgres or local).
 
-USE ROLE ACCOUNTADMIN;
-
-CREATE DATABASE IF NOT EXISTS KICK_CHAT;
-CREATE SCHEMA IF NOT EXISTS KICK_CHAT.CORE;
-
-USE DATABASE KICK_CHAT;
-USE SCHEMA CORE;
-
--- Tenant registry (Phase 2 multi-tenant). Default tenant holds all channels until orgs exist.
-CREATE TABLE IF NOT EXISTS TENANTS (
-    TENANT_ID           VARCHAR(64)     NOT NULL,
-    DISPLAY_NAME        VARCHAR(256),
-    STATUS              VARCHAR(32)     NOT NULL DEFAULT 'active',
-    CREATED_AT          TIMESTAMP_TZ    NOT NULL DEFAULT CURRENT_TIMESTAMP(),
-    CONSTRAINT PK_TENANTS PRIMARY KEY (TENANT_ID)
+CREATE TABLE IF NOT EXISTS tenants (
+    tenant_id       VARCHAR(64)     NOT NULL,
+    display_name    VARCHAR(256),
+    status          VARCHAR(32)     NOT NULL DEFAULT 'active',
+    created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    CONSTRAINT pk_tenants PRIMARY KEY (tenant_id)
 );
 
-MERGE INTO TENANTS t
-USING (SELECT 'default' AS TENANT_ID, 'Default operator' AS DISPLAY_NAME) s
-ON t.TENANT_ID = s.TENANT_ID
-WHEN NOT MATCHED THEN INSERT (TENANT_ID, DISPLAY_NAME) VALUES (s.TENANT_ID, s.DISPLAY_NAME);
+INSERT INTO tenants (tenant_id, display_name)
+VALUES ('default', 'Default operator')
+ON CONFLICT (tenant_id) DO NOTHING;
 
--- Tracked Kick channels (streamer registry)
-CREATE TABLE IF NOT EXISTS CHANNELS (
-    CHANNEL_SLUG            VARCHAR(128)    NOT NULL,
-    TENANT_ID               VARCHAR(64)     NOT NULL DEFAULT 'default',
-    BROADCASTER_USER_ID     NUMBER,
-    DISPLAY_NAME            VARCHAR(256),
-    STATUS                  VARCHAR(32)     NOT NULL DEFAULT 'active',
-    CHAT_SUBSCRIPTION_ID    VARCHAR(128),
-    LIVESTREAM_SUBSCRIPTION_ID VARCHAR(128),
-    CREATED_AT              TIMESTAMP_TZ    NOT NULL DEFAULT CURRENT_TIMESTAMP(),
-    UPDATED_AT              TIMESTAMP_TZ    NOT NULL DEFAULT CURRENT_TIMESTAMP(),
-    CONSTRAINT PK_CHANNELS PRIMARY KEY (CHANNEL_SLUG),
-    CONSTRAINT FK_CHANNELS_TENANT FOREIGN KEY (TENANT_ID) REFERENCES TENANTS(TENANT_ID)
+CREATE TABLE IF NOT EXISTS channels (
+    channel_slug                VARCHAR(128)    NOT NULL,
+    tenant_id                   VARCHAR(64)     NOT NULL DEFAULT 'default',
+    broadcaster_user_id         BIGINT,
+    display_name                VARCHAR(256),
+    status                      VARCHAR(32)     NOT NULL DEFAULT 'active',
+    chat_subscription_id        VARCHAR(128),
+    livestream_subscription_id  VARCHAR(128),
+    created_at                  TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    updated_at                  TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    CONSTRAINT pk_channels PRIMARY KEY (channel_slug),
+    CONSTRAINT fk_channels_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id)
 );
 
--- Raw chat messages (idempotent on message_id)
-CREATE TABLE IF NOT EXISTS CHAT_MESSAGES (
-    MESSAGE_ID          VARCHAR(128)    NOT NULL,
-    EVENT_MESSAGE_ID    VARCHAR(128),
-    CHANNEL_SLUG        VARCHAR(128)    NOT NULL,
-    BROADCASTER_USER_ID NUMBER,
-    KICK_USER_ID        NUMBER          NOT NULL,
-    USERNAME            VARCHAR(256)    NOT NULL,
-    CONTENT             VARCHAR(8192),
-    CREATED_AT          TIMESTAMP_TZ    NOT NULL,
-    SOURCE              VARCHAR(32)     NOT NULL DEFAULT 'webhook',
-    IS_COMMAND          BOOLEAN         DEFAULT FALSE,
-    RAW_PAYLOAD         VARIANT,
-    INGESTED_AT         TIMESTAMP_TZ    NOT NULL DEFAULT CURRENT_TIMESTAMP(),
-    CONSTRAINT PK_CHAT_MESSAGES PRIMARY KEY (MESSAGE_ID)
-)
-CLUSTER BY (CHANNEL_SLUG, CREATED_AT);
-
--- Per-channel chatter dimension (message counts are channel-scoped)
-CREATE TABLE IF NOT EXISTS CHANNEL_USERS (
-    CHANNEL_SLUG        VARCHAR(128)    NOT NULL,
-    KICK_USER_ID        NUMBER          NOT NULL,
-    USERNAME            VARCHAR(256)    NOT NULL,
-    PROFILE_PICTURE     VARCHAR(1024),
-    IS_VERIFIED         BOOLEAN         DEFAULT FALSE,
-    FIRST_SEEN_AT       TIMESTAMP_TZ    NOT NULL,
-    LAST_SEEN_AT        TIMESTAMP_TZ    NOT NULL,
-    MESSAGE_COUNT       NUMBER          DEFAULT 0,
-    CONSTRAINT PK_CHANNEL_USERS PRIMARY KEY (CHANNEL_SLUG, KICK_USER_ID)
+CREATE TABLE IF NOT EXISTS chat_messages (
+    message_id          VARCHAR(128)    NOT NULL,
+    event_message_id    VARCHAR(128),
+    channel_slug        VARCHAR(128)    NOT NULL,
+    broadcaster_user_id BIGINT,
+    kick_user_id        BIGINT          NOT NULL,
+    username            VARCHAR(256)    NOT NULL,
+    content             VARCHAR(8192),
+    created_at          TIMESTAMPTZ     NOT NULL,
+    source              VARCHAR(32)     NOT NULL DEFAULT 'webhook',
+    is_command          BOOLEAN         DEFAULT FALSE,
+    raw_payload         JSONB,
+    ingested_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    CONSTRAINT pk_chat_messages PRIMARY KEY (message_id)
 );
 
--- Stream sessions from livestream.status.updated
-CREATE TABLE IF NOT EXISTS STREAM_SESSIONS (
-    SESSION_ID          VARCHAR(128)    NOT NULL,
-    CHANNEL_SLUG        VARCHAR(128)    NOT NULL,
-    BROADCASTER_USER_ID NUMBER,
-    TITLE               VARCHAR(1024),
-    STARTED_AT          TIMESTAMP_TZ    NOT NULL,
-    ENDED_AT            TIMESTAMP_TZ,
-    IS_LIVE             BOOLEAN         NOT NULL DEFAULT TRUE,
-    RAW_PAYLOAD         VARIANT,
-    INGESTED_AT         TIMESTAMP_TZ    NOT NULL DEFAULT CURRENT_TIMESTAMP(),
-    CONSTRAINT PK_STREAM_SESSIONS PRIMARY KEY (SESSION_ID)
-)
-CLUSTER BY (CHANNEL_SLUG, STARTED_AT);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_channel_created
+    ON chat_messages (channel_slug, created_at);
 
--- Webhook delivery log for debugging / idempotency of event envelope
-CREATE TABLE IF NOT EXISTS WEBHOOK_EVENTS (
-    EVENT_MESSAGE_ID    VARCHAR(128)    NOT NULL,
-    EVENT_TYPE          VARCHAR(128)    NOT NULL,
-    EVENT_VERSION       VARCHAR(16),
-    SUBSCRIPTION_ID     VARCHAR(128),
-    CHANNEL_SLUG        VARCHAR(128),
-    RECEIVED_AT         TIMESTAMP_TZ    NOT NULL DEFAULT CURRENT_TIMESTAMP(),
-    PROCESSED_OK        BOOLEAN         DEFAULT TRUE,
-    ERROR_MESSAGE       VARCHAR(2048),
-    CONSTRAINT PK_WEBHOOK_EVENTS PRIMARY KEY (EVENT_MESSAGE_ID)
+CREATE INDEX IF NOT EXISTS idx_chat_messages_user
+    ON chat_messages (kick_user_id, created_at);
+
+CREATE TABLE IF NOT EXISTS channel_users (
+    channel_slug        VARCHAR(128)    NOT NULL,
+    kick_user_id        BIGINT          NOT NULL,
+    username            VARCHAR(256)    NOT NULL,
+    profile_picture     VARCHAR(1024),
+    is_verified         BOOLEAN         DEFAULT FALSE,
+    first_seen_at       TIMESTAMPTZ     NOT NULL,
+    last_seen_at        TIMESTAMPTZ     NOT NULL,
+    message_count       BIGINT          DEFAULT 0,
+    CONSTRAINT pk_channel_users PRIMARY KEY (channel_slug, kick_user_id)
+);
+
+CREATE TABLE IF NOT EXISTS stream_sessions (
+    session_id          VARCHAR(128)    NOT NULL,
+    channel_slug        VARCHAR(128)    NOT NULL,
+    broadcaster_user_id BIGINT,
+    title               VARCHAR(1024),
+    started_at          TIMESTAMPTZ     NOT NULL,
+    ended_at            TIMESTAMPTZ,
+    is_live             BOOLEAN         NOT NULL DEFAULT TRUE,
+    raw_payload         JSONB,
+    ingested_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    CONSTRAINT pk_stream_sessions PRIMARY KEY (session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stream_sessions_channel_started
+    ON stream_sessions (channel_slug, started_at);
+
+CREATE TABLE IF NOT EXISTS webhook_events (
+    event_message_id    VARCHAR(128)    NOT NULL,
+    event_type          VARCHAR(128)    NOT NULL,
+    event_version       VARCHAR(16),
+    subscription_id     VARCHAR(128),
+    channel_slug        VARCHAR(128),
+    received_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    processed_ok        BOOLEAN         DEFAULT TRUE,
+    error_message       VARCHAR(2048),
+    CONSTRAINT pk_webhook_events PRIMARY KEY (event_message_id)
 );
 
 -- Seed first channel if missing (safe for fresh deploys)
-MERGE INTO CHANNELS t
-USING (
-    SELECT
-        'amirphanthom' AS CHANNEL_SLUG,
-        'default' AS TENANT_ID,
-        538671 AS BROADCASTER_USER_ID,
-        'AmirPhanThom' AS DISPLAY_NAME
-) s
-ON t.CHANNEL_SLUG = s.CHANNEL_SLUG
-WHEN NOT MATCHED THEN INSERT (
-    CHANNEL_SLUG, TENANT_ID, BROADCASTER_USER_ID, DISPLAY_NAME
+INSERT INTO channels (
+    channel_slug, tenant_id, broadcaster_user_id, display_name
 ) VALUES (
-    s.CHANNEL_SLUG, s.TENANT_ID, s.BROADCASTER_USER_ID, s.DISPLAY_NAME
-);
+    'amirphanthom', 'default', 538671, 'AmirPhanThom'
+)
+ON CONFLICT (channel_slug) DO NOTHING;
